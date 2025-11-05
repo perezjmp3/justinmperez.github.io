@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3D Environment - Justin M. Perez</title>
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+        }
+
+        body {
+            overflow: hidden;
+            background: #202025;
+        }
+
+        #c {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        nav {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+        }
+
+        nav a {
+            color: white;
+            margin-right: 14px;
+            text-decoration: none;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 10px 14px;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 10px;
+            backdrop-filter: blur(5px);
+            background: rgba(255,255,255,0.1);
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="./index.html">Home</a>
+        <a href="./projects.html">Projects</a>
+        <a href="./3d-environment.html">3D Environment</a>
+        <a href="./resume.pdf" class="btn">Resume</a>
+    </nav>
+
+    <canvas id="c"></canvas>
+
+    <script type="importmap">
+        {
+          "imports": {
+            "three": "./lib/three/three.module.js",
+            "three/addons/": "./lib/three/",
+            "lil-gui": "./lib/lil-gui/lil-gui.esm.js"
+          }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/OrbitControls.js';
+        import GUI from 'lil-gui';
+
+        // --- renderer / scene / camera ---
+        const canvas = document.getElementById('c');
+        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x202025);
+
+        const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);
+        camera.position.set(3, 2, 5);
+
+        // --- controls (orbit / pan / zoom) ---
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+        // --- lights ---
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        dirLight.position.set(3, 4, 5);
+        scene.add(dirLight, new THREE.AmbientLight(0xffffff, 0.25));
+
+        // --- params ---
+        const params = {
+            shape: 'Box',
+            width: 1.5, height: 1.0, depth: 1.0,
+            radius: 0.8,
+            widthSegments: 24, heightSegments: 16,
+            radialSegments: 24,
+            segments: 2,
+            color: '#6495ED',
+            wireframe: false,
+            autoRotate: true
+        };
+
+        // --- ground grid ---
+        const grid = new THREE.GridHelper(20, 20);
+        grid.position.y = -1.2;
+        scene.add(grid);
+
+        // --- mesh (starts as a box) ---
+        const material = new THREE.MeshStandardMaterial({
+            color: params.color, roughness: 0.5, metalness: 0.1, wireframe: params.wireframe
+        });
+        let mesh = new THREE.Mesh(
+            new THREE.BoxGeometry(params.width, params.height, params.depth,
+                params.segments, params.segments, params.segments),
+            material
+        );
+        scene.add(mesh);
+
+        // --- GUI ---
+        const gui = new GUI();
+        gui.add(params, 'shape', ['Box', 'Sphere', 'Cylinder']).name('Shape').onChange(rebuild);
+
+        const gBox = gui.addFolder('Box');
+        gBox.add(params, 'width', 0.1, 4, 0.1).onChange(rebuild);
+        gBox.add(params, 'height', 0.1, 4, 0.1).onChange(rebuild);
+        gBox.add(params, 'depth', 0.1, 4, 0.1).onChange(rebuild);
+        gBox.add(params, 'segments', 1, 32, 1).name('Segments').onChange(rebuild);
+
+        const gSphere = gui.addFolder('Sphere');
+        gSphere.add(params, 'radius', 0.1, 3, 0.05).onChange(rebuild);
+        gSphere.add(params, 'widthSegments', 3, 64, 1).name('Width Seg').onChange(rebuild);
+        gSphere.add(params, 'heightSegments', 2, 32, 1).name('Height Seg').onChange(rebuild);
+
+        gui.addColor(params, 'color').onChange(value => material.color.set(value));
+        gui.add(params, 'wireframe').onChange(value => material.wireframe = value);
+        gui.add(params, 'autoRotate');
+
+        function rebuild() {
+            scene.remove(mesh);
+            let geometry;
+
+            switch (params.shape) {
+                case 'Box':
+                    geometry = new THREE.BoxGeometry(
+                        params.width, params.height, params.depth,
+                        params.segments, params.segments, params.segments
+                    );
+                    break;
+                case 'Sphere':
+                    geometry = new THREE.SphereGeometry(
+                        params.radius, params.widthSegments, params.heightSegments
+                    );
+                    break;
+                case 'Cylinder':
+                    geometry = new THREE.CylinderGeometry(
+                        params.radius, params.radius, params.height,
+                        params.radialSegments, params.segments
+                    );
+                    break;
+            }
+
+            mesh = new THREE.Mesh(geometry, material);
+            scene.add(mesh);
+        }
+
+        // --- animation / sizing ---
+        function resizeRendererToDisplaySize(renderer) {
+            const canvas = renderer.domElement;
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            const needResize = canvas.width !== width || canvas.height !== height;
+            if (needResize) {
+                renderer.setSize(width, height, false);
+            }
+            return needResize;
+        }
+
+        function animate(time) {
+            time *= 0.001; // seconds
+
+            if (resizeRendererToDisplaySize(renderer)) {
+                const canvas = renderer.domElement;
+                camera.aspect = canvas.clientWidth / canvas.clientHeight;
+                camera.updateProjectionMatrix();
+            }
+
+            if (params.autoRotate) {
+                mesh.rotation.y = time * 0.5;
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+
+        requestAnimationFrame(animate);
+    </script>
+</body>
+</html>
