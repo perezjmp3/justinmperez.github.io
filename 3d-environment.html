@@ -3,7 +3,9 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>3D Environment - Justin M. Perez</title>
+    <title>Dice Physics Simulation - Justin M. Perez</title>
+    <!-- Inline favicon to avoid 404s -->
+    <link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=">
     <style>
         html, body {
             height: 100%;
@@ -44,6 +46,37 @@
             backdrop-filter: blur(5px);
             background: rgba(255,255,255,0.1);
         }
+
+        .simulation-controls {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 100;
+            display: flex;
+            gap: 10px;
+        }
+
+        .simulation-btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            font-family: inherit;
+            cursor: pointer;
+            backdrop-filter: blur(5px);
+            transition: background 0.2s;
+        }
+
+        .simulation-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .simulation-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -54,9 +87,15 @@
         <a href="./resume.pdf" class="btn">Resume</a>
     </nav>
 
-    <canvas id="c"></canvas>
+        <canvas id="c"></canvas>
+        <div class="simulation-controls">
+                <button id="shakeBtn" class="simulation-btn">Shake Dice</button>
+                <button id="throwBtn" class="simulation-btn">Throw Dice</button>
+                <button id="resetBtn" class="simulation-btn">Reset</button>
+        </div>
 
-    <script type="importmap">
+        <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
+        <script type="importmap">
         {
           "imports": {
             "three": "./lib/three/three.module.js",
@@ -70,101 +109,2537 @@
         import { OrbitControls } from 'three/addons/OrbitControls.js';
         import GUI from 'lil-gui';
 
-        // --- renderer / scene / camera ---
+        // --- Constants and Configurations ---
+        const SURFACE_PRESETS = {
+            'Craps Table': { 
+                friction: 0.35,
+                restitution: 0.5,
+                material: 'felt',
+                description: 'Padded felt surface with medium bounce'
+            },
+            'Wooden Table': { 
+                friction: 0.45,
+                restitution: 0.3,
+                material: 'wood',
+                description: 'Solid wood with low bounce'
+            },
+            'Carpet': { 
+                friction: 0.8,
+                restitution: 0.15,
+                material: 'carpet',
+                description: 'High friction, very low bounce'
+            },
+            'Glass': { 
+                friction: 0.1,
+                restitution: 0.95,
+                material: 'glass',
+                description: 'Smooth surface with high bounce'
+            },
+            'Velvet': {
+                friction: 0.9,
+                restitution: 0.1,
+                material: 'velvet',
+                description: 'Very high friction, minimal bounce'
+            },
+            'Marble': {
+                friction: 0.2,
+                restitution: 0.75,
+                material: 'marble',
+                description: 'Smooth and hard with significant bounce'
+            }
+        };
+
+        const DICE_TYPES = {
+            'd4': { faces: 4, vertices: [] }, // Will populate vertices
+            'd6': { faces: 6, vertices: [] },
+            'd8': { faces: 8, vertices: [] },
+            'd12': { faces: 12, vertices: [] },
+            'd20': { faces: 20, vertices: [] }
+        };
+
+        // --- Visual Style Presets ---
+        const DICE_STYLE_PRESETS = {
+            ClassicWhite: {
+                baseColor: 0xffffff,
+                textColor: '#000000',
+                strokeColor: '#000000',
+                pipBG: '#ffffff',
+                pipFG: '#000000',
+                metalness: 0.0,
+                roughness: 0.55,
+                // Physical translucency (off by default)
+                transmission: 0.0,
+                ior: 1.5,
+                thickness: 0.5,
+                attenuationDistance: 0.8,
+                clearcoat: 0.0,
+                clearcoatRoughness: 0.0
+            },
+            CasinoRed: {
+                baseColor: 0xD90000,
+                textColor: '#ffffff',
+                strokeColor: '#330000',
+                pipBG: '#D90000',
+                pipFG: '#ffffff', // white pips for d6 (override in generator)
+                metalness: 0.05,
+                roughness: 0.45,
+                // Enable translucent acrylic-like body
+                transmission: 0.82,
+                ior: 1.3,
+                thickness: 0.5,
+                attenuationDistance: 0.8,
+                clearcoat: 0.1,
+                clearcoatRoughness: 0.2
+            },
+            MidnightBlue: {
+                baseColor: 0x0B1D46,
+                textColor: '#e0eaff',
+                strokeColor: '#09162F',
+                pipBG: '#0B1D46',
+                pipFG: '#ffffff', // white pips for d6 (override in generator)
+                metalness: 0.1,
+                roughness: 0.35,
+                // Translucent acrylic
+                transmission: 0.82,
+                ior: 1.3,
+                thickness: 0.5,
+                attenuationDistance: 0.8,
+                clearcoat: 0.1,
+                clearcoatRoughness: 0.2
+            },
+            Emerald: {
+                baseColor: 0x0F5F3A,
+                textColor: '#d6ffe9',
+                strokeColor: '#083721',
+                pipBG: '#0F5F3A',
+                pipFG: '#d6ffe9', // numbers keep this; d6 pips forced white in generator
+                metalness: 0.08,
+                roughness: 0.4,
+                // Translucent acrylic
+                transmission: 0.82,
+                ior: 1.3,
+                thickness: 0.5,
+                attenuationDistance: 0.8,
+                clearcoat: 0.1,
+                clearcoatRoughness: 0.2
+            },
+            Bone: {
+                baseColor: 0xF2E6D2,
+                textColor: '#402A16',
+                strokeColor: '#402A16',
+                pipBG: '#F2E6D2',
+                pipFG: '#402A16',
+                metalness: 0.0,
+                roughness: 0.6,
+                transmission: 0.0,
+                ior: 1.5,
+                thickness: 0.5,
+                attenuationDistance: 1.0,
+                clearcoat: 0.0,
+                clearcoatRoughness: 0.0
+            }
+        };
+        // Active style reference (updated via GUI)
+        let activeStyle = DICE_STYLE_PRESETS.ClassicWhite;
+
+        // --- Physics World Setup ---
+    const world = new CANNON.World();
+        world.gravity.set(0, -9.82, 0);
+        world.broadphase = new CANNON.SAPBroadphase(world); // Use Sweep-and-Prune instead of NaiveBroadphase
+        world.solver.iterations = 10; // Reduced from 50 - still stable but much faster
+        world.defaultContactMaterial.contactEquationStiffness = 1e7; // Slightly reduced for performance
+        world.defaultContactMaterial.contactEquationRelaxation = 3;
+        world.defaultContactMaterial.friction = 0.3;
+        world.defaultContactMaterial.restitution = 0.2;
+        world.allowSleep = true; // Enable sleeping for better performance
+        world.solver.tolerance = 0.01; // Slightly looser for speed
+
+    // Create shared materials for consistent contacts
+    const diceMaterial = new CANNON.Material('diceMaterial');
+    const groundMaterialPhys = new CANNON.Material('groundMaterial');
+
+    // --- Renderer / Scene / Camera ---
         const canvas = document.getElementById('c');
-        const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-        const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x202025);
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    // Enable shadow mapping for lamp & dice
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x202025);
 
         const camera = new THREE.PerspectiveCamera(60, 2, 0.1, 100);
         camera.position.set(3, 2, 5);
 
-        // --- controls (orbit / pan / zoom) ---
+        // --- Controls (orbit / pan / zoom) ---
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
 
-        // --- lights ---
-        const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+        // --- Lights ---
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
         dirLight.position.set(3, 4, 5);
         scene.add(dirLight, new THREE.AmbientLight(0xffffff, 0.25));
 
-        // --- params ---
-        const params = {
-            shape: 'Box',
-            width: 1.5, height: 1.0, depth: 1.0,
-            radius: 0.8,
-            widthSegments: 24, heightSegments: 16,
-            radialSegments: 24,
-            segments: 2,
-            color: '#6495ED',
+        // --- Hanging Lamp (chain + shade + bulb + spotlight) ---
+        let lampGroup = null, lampLight = null, lampTarget = null, lampBulb = null;
+        function createHangingLamp() {
+            if (lampGroup) {
+                scene.remove(lampGroup);
+            }
+            lampGroup = new THREE.Group();
+            scene.add(lampGroup);
+
+            const ceilingY = state.lampTopHeight || 4.5;
+            const shadeY = state.lampHeight;
+            const links = Math.max(3, Math.floor(state.lampLinks || 12));
+            const chainLen = Math.max(0.2, ceilingY - shadeY);
+            const spacing = chainLen / links;
+
+            // Chain links as thin tori alternating rotation
+            const linkGeo = new THREE.TorusGeometry(0.06, 0.012, 8, 12);
+            const linkMat = new THREE.MeshStandardMaterial({ color: 0x888888, metalness: 0.7, roughness: 0.35 });
+            for (let i = 0; i < links; i++) {
+                const m = new THREE.Mesh(linkGeo, linkMat);
+                const y = ceilingY - i * spacing;
+                m.position.set(0, y, 0);
+                // Odd indices (starting with second link) rotate 90° in Y to interlock
+                m.rotation.y = (i % 2 === 1) ? Math.PI / 2 : 0;
+                m.castShadow = true;
+                lampGroup.add(m);
+            }
+
+            // Shade (open cone)
+            const shadeGeo = new THREE.ConeGeometry(Math.max(0.1, state.lampShadeRadius || 0.45), Math.max(0.1, state.lampShadeHeight || 0.5), 24, 1, true);
+            const shadeMat = new THREE.MeshStandardMaterial({ color: 0x333333, metalness: 0.6, roughness: 0.25, side: THREE.DoubleSide });
+            const shade = new THREE.Mesh(shadeGeo, shadeMat);
+            shade.position.set(0, shadeY, 0);
+            // Shade default orientation already points open side down; remove the flip
+            shade.rotation.x = 0;
+            shade.castShadow = true;
+            lampGroup.add(shade);
+
+            // Bulb
+            const bulbGeo = new THREE.SphereGeometry(0.07, 12, 12);
+            const bulbMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffee, emissiveIntensity: 1.5, metalness: 0, roughness: 0.6 });
+            lampBulb = new THREE.Mesh(bulbGeo, bulbMat);
+            lampBulb.position.set(0, shadeY - 0.12, 0);
+            lampGroup.add(lampBulb);
+
+            // Spotlight
+            lampLight = new THREE.SpotLight(state.lampColor || 0xffffff, state.lampIntensity, state.lampDistance, state.lampAngle, state.lampPenumbra, 1.0);
+            lampLight.position.copy(lampBulb.position);
+            lampLight.castShadow = true;
+            lampLight.shadow.mapSize.set(1024, 1024);
+            lampLight.shadow.camera.near = 0.1;
+            lampLight.shadow.camera.far = 20;
+            lampLight.decay = 2;
+            lampTarget = new THREE.Object3D();
+            lampTarget.position.set(0, 0, 0);
+            scene.add(lampTarget);
+            lampLight.target = lampTarget;
+            lampGroup.add(lampLight);
+
+            // Optional visible light beam helper (small cone)
+            if (state.lampShowHelper) {
+                const beamGeo = new THREE.ConeGeometry((state.lampDistance || 12) * Math.tan(state.lampAngle || 0.6) * 0.3, (state.lampDistance || 12), 12, 1, true);
+                const beamMat = new THREE.MeshBasicMaterial({ color: state.lampColor || 0xffffff, transparent: true, opacity: 0.08, side: THREE.DoubleSide, depthWrite: false });
+                const beam = new THREE.Mesh(beamGeo, beamMat);
+                beam.position.copy(lampBulb.position);
+                beam.rotation.x = -Math.PI / 2; // point down roughly; target will align the light
+                lampGroup.add(beam);
+            }
+
+            lampGroup.visible = !!state.lampEnabled;
+        }
+
+        function updateLampFromState() {
+            if (!lampGroup) {
+                createHangingLamp();
+                return;
+            }
+            lampGroup.visible = !!state.lampEnabled;
+            // Recreate to adjust chain length and shade height cleanly
+            createHangingLamp();
+        }
+
+        // --- Texture helpers for numbered dice ---
+        function createNumberTexture(num, options = {}) {
+            const {
+                size = 256,
+                bg = 'rgba(0,0,0,0)',
+                // Use pip foreground color for numeric text to match d6 pips
+                fg = (activeStyle?.pipFG) || '#ffffff',
+                font = 'bold 180px Arial',
+                // Use pip background (die face) as stroke to mirror dot contrast
+                stroke = (activeStyle?.pipBG) || '#000',
+                strokeWidth = 6,
+                dieType = null  // Added parameter to know which die type
+            } = options;
+            const canvas = document.createElement('canvas');
+            canvas.width = size; canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return new THREE.Texture();
+            ctx.fillStyle = bg;
+            ctx.fillRect(0,0,size,size);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = font;
+            if (strokeWidth > 0) {
+                ctx.lineWidth = strokeWidth;
+                ctx.strokeStyle = stroke;
+                ctx.strokeText(String(num), size/2, size/2);
+            }
+            ctx.fillStyle = fg;
+            ctx.fillText(String(num), size/2, size/2);
+            
+            // Add underline for 6 and 9 ONLY on d12 and d20 to distinguish them
+            if ((num === 6 || num === 9) && (dieType === 'd12' || dieType === 'd20')) {
+                const textMetrics = ctx.measureText(String(num));
+                const underlineY = size/2 + 90; // Below the number
+                const underlineWidth = textMetrics.width || 80;
+                const underlineThickness = strokeWidth;
+                
+                // Draw stroke for underline
+                if (strokeWidth > 0) {
+                    ctx.lineWidth = underlineThickness;
+                    ctx.strokeStyle = stroke;
+                    ctx.beginPath();
+                    ctx.moveTo(size/2 - underlineWidth/2, underlineY);
+                    ctx.lineTo(size/2 + underlineWidth/2, underlineY);
+                    ctx.stroke();
+                }
+                
+                // Draw fill for underline
+                ctx.fillStyle = fg;
+                ctx.fillRect(size/2 - underlineWidth/2, underlineY - underlineThickness/2, underlineWidth, underlineThickness);
+            }
+            
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.minFilter = THREE.LinearFilter;
+            tex.generateMipmaps = true;
+            return tex;
+        }
+
+        function createPipTextures(value) {
+            // Returns { color, transmissionMap } where transmissionMap=1 outside pips, 0 on pips
+            const size = 256;
+            const r = 24;
+            const positions = {
+                1: [[0,0]],
+                2: [[-1,-1],[1,1]],
+                3: [[-1,-1],[0,0],[1,1]],
+                4: [[-1,-1],[-1,1],[1,-1],[1,1]],
+                5: [[-1,-1],[-1,1],[0,0],[1,-1],[1,1]],
+                6: [[-1,-1],[-1,0],[-1,1],[1,-1],[1,0],[1,1]]
+            };
+            const drawPips = (ctx, color) => {
+                ctx.fillStyle = color;
+                const s = size/4;
+                positions[value].forEach(([gx, gy]) => {
+                    const x = size/2 + gx * s;
+                    const y = size/2 + gy * s;
+                    ctx.beginPath();
+                    ctx.arc(x, y, r, 0, Math.PI*2);
+                    ctx.fill();
+                });
+            };
+
+            // Decide pip foreground color: force white for specific translucent styles on d6
+            const forceWhiteForStyles = (
+                activeStyle === DICE_STYLE_PRESETS.CasinoRed ||
+                activeStyle === DICE_STYLE_PRESETS.MidnightBlue ||
+                activeStyle === DICE_STYLE_PRESETS.Emerald
+            );
+            const chosenPipFG = forceWhiteForStyles ? '#ffffff' : ((activeStyle?.pipFG) || '#000000');
+            // Chromatic variation: darken background face color for translucent styles to enhance pip contrast
+            let pipBG = (activeStyle?.pipBG) || '#ffffff';
+            if (forceWhiteForStyles) {
+                try {
+                    const darken = Math.max(0, Math.min(0.9, state?.pipBGDarken ?? 0.15));
+                    const tmp = new THREE.Color(pipBG);
+                    tmp.multiplyScalar(1 - darken);
+                    pipBG = `#${tmp.getHexString()}`;
+                } catch(e) { /* ignore color parse errors */ }
+            }
+
+            // Color texture
+            const canvasColor = document.createElement('canvas');
+            canvasColor.width = size; canvasColor.height = size;
+            const ctxC = canvasColor.getContext('2d');
+            if (!ctxC) return { color: new THREE.CanvasTexture(document.createElement('canvas')), transmissionMap: undefined };
+            ctxC.fillStyle = pipBG;
+            ctxC.fillRect(0,0,size,size);
+            drawPips(ctxC, chosenPipFG);
+            const colorTex = new THREE.CanvasTexture(canvasColor);
+            colorTex.minFilter = THREE.LinearFilter;
+            colorTex.generateMipmaps = true;
+
+            // Transmission map: 1 outside pips (allow transmission), 0 on pips (opaque)
+            const canvasT = document.createElement('canvas');
+            canvasT.width = size; canvasT.height = size;
+            const ctxT = canvasT.getContext('2d');
+            ctxT.fillStyle = '#ffffff';
+            ctxT.fillRect(0,0,size,size);
+            drawPips(ctxT, '#000000');
+            const tTex = new THREE.CanvasTexture(canvasT);
+            tTex.minFilter = THREE.LinearFilter;
+            tTex.generateMipmaps = true;
+
+            return { color: colorTex, transmissionMap: tTex };
+        }
+
+        function addDimplesToD6(geometry, size) {
+            // Add physical dimples (indentations) where pips should be
+            // We need high subdivision to get smooth circular dimples
+            
+            const positions = geometry.attributes.position;
+            const posArray = positions.array;
+            const vertexCount = positions.count;
+            
+            // Pip positions for each face value (same as pip texture positions)
+            // These are in normalized coordinates where the face center is (0,0)
+            // and face edges are at -1 and +1
+            const pipConfigs = {
+                1: [[0,0]],
+                2: [[-1,-1],[1,1]],
+                3: [[-1,-1],[0,0],[1,1]],
+                4: [[-1,-1],[-1,1],[1,-1],[1,1]],
+                5: [[-1,-1],[-1,1],[0,0],[1,-1],[1,1]],
+                6: [[-1,-1],[-1,0],[-1,1],[1,-1],[1,0],[1,1]]
+            };
+            
+            // Face order for BoxGeometry: +x, -x, +y, -y, +z, -z
+            // Corresponding pip values: 3, 4, 1, 6, 2, 5
+            const faceValues = [3, 4, 1, 6, 2, 5];
+            const faceNormals = [
+                new THREE.Vector3(1, 0, 0),   // +x (value 3)
+                new THREE.Vector3(-1, 0, 0),  // -x (value 4)
+                new THREE.Vector3(0, 1, 0),   // +y (value 1)
+                new THREE.Vector3(0, -1, 0),  // -y (value 6)
+                new THREE.Vector3(0, 0, 1),   // +z (value 2)
+                new THREE.Vector3(0, 0, -1)   // -z (value 5)
+            ];
+            
+            // Adjusted dimple parameters for smoother, more subtle effect
+            const dimpleRadius = size * 0.095;  // Slightly smaller radius
+            const dimpleDepth = size * 0.035;   // Shallower depth for subtlety
+            const halfSize = size / 2;
+            const tolerance = size * 0.002; // Very tight tolerance - only vertices exactly on face
+            
+            // Convert pip positions from [-1,1] range to world coordinates
+            // Pips should spread across most of the face, matching the texture spacing
+            const pipScale = halfSize * 0.50;
+            
+            // Process each vertex
+            for (let i = 0; i < vertexCount; i++) {
+                const vx = posArray[i * 3];
+                const vy = posArray[i * 3 + 1];
+                const vz = posArray[i * 3 + 2];
+                const vertex = new THREE.Vector3(vx, vy, vz);
+                
+                // Determine which face this vertex belongs to (must be ON the face, not near edges/corners)
+                let faceIndex = -1;
+                let localU = 0, localV = 0;
+                
+                // Check each face - vertex must be exactly on that face plane
+                if (Math.abs(vx - halfSize) < tolerance) {
+                    // +x face (value 3)
+                    faceIndex = 0;
+                    localU = vy;
+                    localV = vz;
+                } else if (Math.abs(vx + halfSize) < tolerance) {
+                    // -x face (value 4)
+                    faceIndex = 1;
+                    localU = -vy;  // Flip to match texture orientation
+                    localV = vz;
+                } else if (Math.abs(vy - halfSize) < tolerance) {
+                    // +y face (value 1)
+                    faceIndex = 2;
+                    localU = vx;
+                    localV = vz;
+                } else if (Math.abs(vy + halfSize) < tolerance) {
+                    // -y face (value 6)
+                    faceIndex = 3;
+                    localU = vx;
+                    localV = -vz;  // Flip to match texture orientation
+                } else if (Math.abs(vz - halfSize) < tolerance) {
+                    // +z face (value 2)
+                    faceIndex = 4;
+                    localU = vx;
+                    localV = -vy;  // Flip V to fix backwards orientation
+                } else if (Math.abs(vz + halfSize) < tolerance) {
+                    // -z face (value 5)
+                    faceIndex = 5;
+                    localU = -vx;  // Flip to match texture orientation
+                    localV = vy;
+                }
+                
+                if (faceIndex === -1) continue; // Not on any face
+                
+                const faceValue = faceValues[faceIndex];
+                const faceNormal = faceNormals[faceIndex];
+                const pipPositions = pipConfigs[faceValue];
+                
+                // Check distance to each pip center for this face
+                let maxDisplacement = 0;
+                pipPositions.forEach(([px, py]) => {
+                    // Convert pip position from [-1,1] to world coordinates
+                    const pipWorldU = px * pipScale;
+                    const pipWorldV = py * pipScale;
+                    
+                    const dist = Math.sqrt(
+                        Math.pow(localU - pipWorldU, 2) + 
+                        Math.pow(localV - pipWorldV, 2)
+                    );
+                    
+                    if (dist < dimpleRadius) {
+                        // Use smoother falloff - spherical cap shape
+                        const normalizedDist = dist / dimpleRadius;
+                        // Smooth hermite interpolation for very smooth edges
+                        const t = 1 - normalizedDist;
+                        const falloff = t * t * (3 - 2 * t); // Smoothstep
+                        maxDisplacement = Math.max(maxDisplacement, dimpleDepth * falloff);
+                    }
+                });
+                
+                // Apply displacement inward along face normal
+                if (maxDisplacement > 0) {
+                    vertex.addScaledVector(faceNormal, -maxDisplacement);
+                    posArray[i * 3] = vertex.x;
+                    posArray[i * 3 + 1] = vertex.y;
+                    posArray[i * 3 + 2] = vertex.z;
+                }
+            }
+            
+            positions.needsUpdate = true;
+            geometry.computeVertexNormals(); // Recalculate normals for proper shading
+            return geometry;
+        }
+
+        function createD6Materials() {
+            // Standard die face order mapping for BoxGeometry groups: +x, -x, +y, -y, +z, -z
+            const values = [3, 4, 1, 6, 2, 5];
+            // Use state overrides if available, otherwise fall back to preset values
+            const transmission = state.transmission ?? activeStyle.transmission;
+            const ior = state.ior ?? (activeStyle.ior || 1.5);
+            const thickness = state.thickness ?? (activeStyle.thickness || 0.5);
+            const attenuationDistance = state.attenuationDistance ?? (activeStyle.attenuationDistance || 0.8);
+            const clearcoat = state.clearcoat ?? 0;
+            const clearcoatRoughness = state.clearcoatRoughness ?? 0.25;
+            
+            const usePhysical = (transmission || 0) > 0.001;
+            return values.map(v => {
+                const { color, transmissionMap } = createPipTextures(v);
+                if (usePhysical) {
+                    return new THREE.MeshPhysicalMaterial({
+                        // Use neutral white so texture map controls face & pip colors without tinting pips
+                        color: 0xffffff,
+                        roughness: activeStyle.roughness,
+                        metalness: activeStyle.metalness,
+                        map: color,
+                        transparent: true,
+                        transmission: transmission,
+                        ior: ior,
+                        thickness: thickness,
+                        attenuationColor: new THREE.Color(activeStyle.baseColor),
+                        attenuationDistance: attenuationDistance,
+                        clearcoat: clearcoat,
+                        clearcoatRoughness: clearcoatRoughness,
+                        // Make pips opaque by blocking transmission where dots are
+                        transmissionMap: transmissionMap,
+                        side: THREE.DoubleSide
+                        // Note: depthWrite true (default) for d6 to avoid face sorting issues
+                    });
+                } else {
+                    return new THREE.MeshStandardMaterial({
+                        // Neutral white prevents tinting of pip white by baseColor
+                        color: 0xffffff,
+                        roughness: activeStyle.roughness,
+                        metalness: activeStyle.metalness,
+                        map: color,
+                        side: THREE.DoubleSide
+                    });
+                }
+            });
+        }
+
+        function createNumberLabelPlane(num, normal, position, scale = 0.45, dieType = null) {
+            const tex = createNumberTexture(num, { strokeWidth: 8, dieType: dieType });
+            const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: true });
+            const plane = new THREE.Mesh(new THREE.PlaneGeometry(1,1), mat);
+            plane.scale.setScalar(scale);
+            // Orient plane so its normal aligns with provided normal
+            const up = new THREE.Vector3(0,0,1);
+            const n = new THREE.Vector3(normal.x, normal.y, normal.z).normalize();
+            const quat = new THREE.Quaternion().setFromUnitVectors(up, n);
+            plane.quaternion.copy(quat);
+            const offset = (typeof state !== 'undefined' && state && typeof state.labelOffset === 'number') ? state.labelOffset : 0.06;
+            plane.position.copy(position.clone().add(n.multiplyScalar(offset)));
+            return plane;
+        }
+
+        // D12 bevel: cluster triangles into pentagons, then apply chamfer to pentagon edges only
+    function bevelD12Geometry(baseGeometry, bevelAmount, rectangleCount = 6, chamferPeakHeight = 1.0, edgeExtend = 0.12, taperAmount = 1.0, taperStart = 0.12) {
+            const g = baseGeometry.index ? baseGeometry.toNonIndexed() : baseGeometry.clone();
+            const pos = g.getAttribute('position');
+            // Smooth end-only taper helper (matches triangular dice implementation)
+            function endTaper(n) {
+                if (taperStart <= 0) return 1;
+                const ease = (x) => x * x * (3 - 2 * x);
+                if (n < taperStart) {
+                    const k = THREE.MathUtils.clamp(n / taperStart, 0, 1);
+                    return THREE.MathUtils.lerp(0, taperAmount, ease(k));
+                }
+                if (n > 1 - taperStart) {
+                    const k = THREE.MathUtils.clamp((1 - n) / taperStart, 0, 1);
+                    return THREE.MathUtils.lerp(0, taperAmount, ease(k));
+                }
+                return 1;
+            }
+            
+            // Cluster triangles into pentagonal faces
+            const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+            const centroid = new THREE.Vector3();
+            const nrm = new THREE.Vector3();
+            const clusters = [];
+            const pushCluster = (centroid, normal, triIndices) => {
+                clusters.push({ centroid: centroid.clone(), normal: normal.clone(), tris: [triIndices] });
+            };
+            const tryMergeCluster = (centroid, normal, triIndices) => {
+                const angEps = 1 - Math.cos(2 * Math.PI/180);
+                for (const c of clusters) {
+                    const dot = c.normal.dot(normal);
+                    if (1 - dot < angEps) {
+                        c.tris.push(triIndices);
+                        const n = c.tris.length;
+                        c.centroid.multiplyScalar(n - 1).add(centroid).divideScalar(n);
+                        c.normal.add(normal).normalize();
+                        return true;
+                    }
+                }
+                return false;
+            };
+            
+            for (let i = 0; i < pos.count; i += 3) {
+                const a = i, b = i+1, c = i+2;
+                vA.fromBufferAttribute(pos, a);
+                vB.fromBufferAttribute(pos, b);
+                vC.fromBufferAttribute(pos, c);
+                centroid.copy(vA).add(vB).add(vC).multiplyScalar(1/3);
+                nrm.copy(vB).sub(vA).cross(vC.clone().sub(vA)).normalize();
+                if (nrm.dot(centroid) < 0) nrm.multiplyScalar(-1);
+                if (!tryMergeCluster(centroid, nrm, [a,b,c])) {
+                    pushCluster(centroid, nrm, [a,b,c]);
+                }
+            }
+            
+            // Extract unique vertices per pentagon and compute single inset boundary
+            const maxInsetFraction = 0.35;
+            const insetFactor = (1 - bevelAmount) * maxInsetFraction;
+            
+            const pentagons = [];
+            clusters.forEach(c => {
+                const vertSet = new Set();
+                c.tris.forEach(tri => tri.forEach(v => vertSet.add(v)));
+                const vertIndices = Array.from(vertSet);
+                const verts = vertIndices.map(vi => new THREE.Vector3(pos.getX(vi), pos.getY(vi), pos.getZ(vi)));
+                
+                // Sort vertices in consistent order (by angle around centroid)
+                const cent = c.centroid;
+                const n = c.normal;
+                const ref = new THREE.Vector3().subVectors(verts[0], cent).normalize();
+                const tangent = ref.clone().cross(n).normalize();
+                verts.sort((vA, vB) => {
+                    const dA = new THREE.Vector3().subVectors(vA, cent);
+                    const dB = new THREE.Vector3().subVectors(vB, cent);
+                    const angleA = Math.atan2(dA.dot(tangent), dA.dot(ref));
+                    const angleB = Math.atan2(dB.dot(tangent), dB.dot(ref));
+                    return angleA - angleB;
+                });
+                
+                // Compute single inset position per vertex
+                const inset = verts.map(v => new THREE.Vector3().copy(v).lerp(cent, insetFactor));
+                
+                pentagons.push({ centroid: cent, normal: n, verts, inset });
+            });
+            
+            // Build edge map for pentagon edges
+            const edgeMap = new Map();
+            function addEdge(pentIdx, v1Idx, v2Idx) {
+                const v1 = pentagons[pentIdx].verts[v1Idx];
+                const v2 = pentagons[pentIdx].verts[v2Idx];
+                const key1 = `${v1.x.toFixed(6)},${v1.y.toFixed(6)},${v1.z.toFixed(6)}`;
+                const key2 = `${v2.x.toFixed(6)},${v2.y.toFixed(6)},${v2.z.toFixed(6)}`;
+                const key = key1 < key2 ? key1+'|'+key2 : key2+'|'+key1;
+                let rec = edgeMap.get(key);
+                if (!rec) { rec = { pents: [], localIndices: [] }; edgeMap.set(key, rec); }
+                if (rec.pents.length < 2) {
+                    rec.pents.push(pentIdx);
+                    rec.localIndices.push([v1Idx, v2Idx]);
+                }
+            }
+            
+            pentagons.forEach((pent, pi) => {
+                const n = pent.verts.length; // 5
+                for (let i = 0; i < n; i++) {
+                    addEdge(pi, i, (i+1)%n);
+                }
+            });
+            
+            // Build geometry
+            const newPositions = [];
+            const newIndices = [];
+            let vertCounter = 0;
+            const vertMap = new Map();
+            function pushVertex(v) {
+                const key = v.x.toFixed(6)+','+v.y.toFixed(6)+','+v.z.toFixed(6);
+                let idx = vertMap.get(key);
+                if (idx === undefined) {
+                    newPositions.push(v.x, v.y, v.z);
+                    idx = vertCounter++;
+                    vertMap.set(key, idx);
+                }
+                return idx;
+            }
+            
+            // 1. Inner face pentagons (inset boundary)
+            pentagons.forEach(pent => {
+                const indices = pent.inset.map(v => pushVertex(v));
+                // Fan triangulation from center - reversed winding to face outward
+                for (let i = 1; i < indices.length - 1; i++) {
+                    newIndices.push(indices[0], indices[i+1], indices[i]);
+                }
+            });
+            
+            // 2. Edge band: curved surface connecting the two inset edges
+            const N = Math.max(1, Math.floor(rectangleCount)); // length subdivisions
+            const M = 6; // width subdivisions for curve (perpendicular to edge)
+            
+            // Build vertex-to-edges map for intersection detection
+            const vertexEdgeMap = new Map();
+            edgeMap.forEach((e, edgeKey) => {
+                if (e.pents.length !== 2) return;
+                const [pA, pB] = e.pents;
+                const [locA, locB] = e.localIndices;
+                const [a1, a2] = locA;
+                const pentA = pentagons[pA];
+                const v1 = pentA.verts[a1];
+                const v2 = pentA.verts[a2];
+                [v1, v2].forEach(v => {
+                    const vKey = `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+                    if (!vertexEdgeMap.has(vKey)) vertexEdgeMap.set(vKey, []);
+                    vertexEdgeMap.get(vKey).push(edgeKey);
+                });
+            });
+            
+            // Compute intersection clipping bounds for each edge
+            const edgeClipBounds = new Map();
+            edgeMap.forEach((e, edgeKey) => {
+                if (e.pents.length !== 2) return;
+                const [pA, pB] = e.pents;
+                const [locA, locB] = e.localIndices;
+                const [a1, a2] = locA;
+                const pentA = pentagons[pA];
+                const origV1 = pentA.verts[a1];
+                const origV2 = pentA.verts[a2];
+                
+                // Default: no clipping (full extended range)
+                let clipStart = -edgeExtend;
+                let clipEnd = 1 + edgeExtend;
+                
+                // Check both endpoints for adjacent edges
+                [origV1, origV2].forEach((vertex, endIdx) => {
+                    const vKey = `${vertex.x.toFixed(6)},${vertex.y.toFixed(6)},${vertex.z.toFixed(6)}`;
+                    const adjacentEdges = vertexEdgeMap.get(vKey) || [];
+                    
+                    // If there are adjacent edges meeting at this vertex, prevent overlap
+                    if (adjacentEdges.length > 1) {
+                        const span = 1 + 2 * edgeExtend;
+                        
+                        if (taperStart > 0.001) {
+                            // With taper: allow safe extension proportional to taper region
+                            const taperAbsoluteLength = taperStart * span;
+                            const safeExtension = taperAbsoluteLength * 0.4; // Conservative
+                            
+                            if (endIdx === 0) {
+                                clipStart = Math.max(clipStart, -edgeExtend + safeExtension);
+                            } else {
+                                clipEnd = Math.min(clipEnd, 1 + edgeExtend - safeExtension);
+                            }
+                        } else {
+                            // No taper: clip exactly at vertex to prevent overlap
+                            if (endIdx === 0) {
+                                clipStart = Math.max(clipStart, 0.0);
+                            } else {
+                                clipEnd = Math.min(clipEnd, 1.0);
+                            }
+                        }
+                    }
+                });
+                
+                edgeClipBounds.set(edgeKey, { clipStart, clipEnd });
+            });
+            
+            edgeMap.forEach((e, edgeKey) => {
+                if (e.pents.length !== 2) return;
+                const [pA, pB] = e.pents;
+                const [locA, locB] = e.localIndices;
+                const [a1, a2] = locA;
+                const [b1, b2] = locB;
+                
+                const pentA = pentagons[pA];
+                const pentB = pentagons[pB];
+                
+                // Original edge endpoints (where faces would meet at bevel=1)
+                const origV1 = pentA.verts[a1];
+                const origV2 = pentA.verts[a2];
+                
+                // Inset edge endpoints from both faces
+                const insetA1 = pentA.inset[a1];
+                const insetA2 = pentA.inset[a2];
+                const insetB1 = pentB.inset[b1];
+                const insetB2 = pentB.inset[b2];
+                
+                // Ensure proper ordering: check if B1 corresponds to A1 or A2
+                const distB1toA1 = insetB1.distanceTo(insetA1);
+                const distB1toA2 = insetB1.distanceTo(insetA2);
+                
+                let vA_start, vA_end, vB_start, vB_end;
+                if (distB1toA1 < distB1toA2) {
+                    vA_start = insetA1;
+                    vA_end = insetA2;
+                    vB_start = insetB1;
+                    vB_end = insetB2;
+                } else {
+                    vA_start = insetA1;
+                    vA_end = insetA2;
+                    vB_start = insetB2;
+                    vB_end = insetB1;
+                }
+                
+                // Get clipping bounds for this edge
+                const bounds = edgeClipBounds.get(edgeKey) || { clipStart: -edgeExtend, clipEnd: 1 + edgeExtend };
+                
+                // Create curved surface with N segments along edge length (clipped to bounds)
+                const span = 1 + 2 * edgeExtend;
+                for (let segIdx = 0; segIdx < N; segIdx++) {
+                    const s0 = -edgeExtend + (segIdx / N) * span;
+                    const s1 = -edgeExtend + ((segIdx + 1) / N) * span;
+                    
+                    // Skip segments completely outside clip bounds
+                    if (s1 < bounds.clipStart || s0 > bounds.clipEnd) continue;
+                    
+                    // Clamp segment endpoints to clip bounds
+                    const s0Clipped = Math.max(s0, bounds.clipStart);
+                    const s1Clipped = Math.min(s1, bounds.clipEnd);
+                    
+                    // Skip degenerate segments
+                    if (s1Clipped <= s0Clipped) continue;
+                    
+                    // Sample original and inset endpoints (using clipped values)
+                    const origP0 = new THREE.Vector3().lerpVectors(origV1, origV2, s0Clipped);
+                    const origP1 = new THREE.Vector3().lerpVectors(origV1, origV2, s1Clipped);
+                    const insetA_P0 = new THREE.Vector3().lerpVectors(vA_start, vA_end, s0Clipped);
+                    const insetA_P1 = new THREE.Vector3().lerpVectors(vA_start, vA_end, s1Clipped);
+                    const insetB_P0 = new THREE.Vector3().lerpVectors(vB_start, vB_end, s0Clipped);
+                    const insetB_P1 = new THREE.Vector3().lerpVectors(vB_start, vB_end, s1Clipped);
+                    
+                    // Build M+1 rows of vertices across the width (from insetA to insetB)
+                    const row0 = []; // at s0
+                    const row1 = []; // at s1
+                    
+                    for (let j = 0; j <= M; j++) {
+                        const t = j / M; // 0 = face A, 1 = face B
+                        // Linear interpolation across width at s0 and s1
+                        const baseP0 = new THREE.Vector3().lerpVectors(insetA_P0, insetB_P0, t);
+                        const baseP1 = new THREE.Vector3().lerpVectors(insetA_P1, insetB_P1, t);
+                        // Per-row normalized longitudinal positions for end-only taper (use clipped values)
+                        const s0Norm = (s0Clipped + edgeExtend) / (1 + 2 * edgeExtend);
+                        const s1Norm = (s1Clipped + edgeExtend) / (1 + 2 * edgeExtend);
+                        const taper0 = endTaper(s0Norm);
+                        const taper1 = endTaper(s1Norm);
+                        
+                        // Calculate how far to push outward (circular arc)
+                        // Peak at t=0.5 (center), zero at edges (t=0 and t=1)
+                        const arcFactor = Math.sin(t * Math.PI); // 0 at edges, 1 at center
+                        
+                        // Direction from inset midpoint to original edge position
+                        const insetMid0 = new THREE.Vector3().lerpVectors(insetA_P0, insetB_P0, 0.5);
+                        const insetMid1 = new THREE.Vector3().lerpVectors(insetA_P1, insetB_P1, 0.5);
+                        const outwardDir0 = new THREE.Vector3().subVectors(origP0, insetMid0);
+                        const outwardDir1 = new THREE.Vector3().subVectors(origP1, insetMid1);
+                        const maxHeight0 = outwardDir0.length();
+                        const maxHeight1 = outwardDir1.length();
+                        
+                        // Apply arc to create curved surface (multiplied by chamferPeakHeight)
+                        const p0 = new THREE.Vector3().copy(baseP0).addScaledVector(
+                            outwardDir0.normalize(), 
+                            arcFactor * maxHeight0 * chamferPeakHeight * taper0
+                        );
+                        const p1 = new THREE.Vector3().copy(baseP1).addScaledVector(
+                            outwardDir1.normalize(), 
+                            arcFactor * maxHeight1 * chamferPeakHeight * taper1
+                        );
+                        
+                        row0.push(p0);
+                        row1.push(p1);
+                    }
+                    
+                    // Connect row0 and row1 with quads
+                    for (let j = 0; j < M; j++) {
+                        const i00 = pushVertex(row0[j]);
+                        const i01 = pushVertex(row0[j + 1]);
+                        const i10 = pushVertex(row1[j]);
+                        const i11 = pushVertex(row1[j + 1]);
+                        
+                        // Two triangles forming quad (d12 needs reversed winding)
+                        newIndices.push(i00, i11, i01);
+                        newIndices.push(i00, i10, i11);
+                    }
+                }
+            });
+            
+            const out = new THREE.BufferGeometry();
+            out.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
+            out.setIndex(newIndices);
+            out.computeVertexNormals();
+            return out;
+        }        // Flat chamfer (single segment) for purely triangular convex polyhedra (d4, d8, d20).
+        // Replaces each original triangle with a smaller inset triangle plus quads along each shared edge.
+        // For d6 and d12 we currently keep original geometry (to avoid splitting planar multi-triangle faces incorrectly).
+    function bevelGeometry(baseGeometry, bevelAmount = 0.95, dieType = '', rectangleCount = 6, chamferPeakHeight = 1.0, edgeExtend = 0.12, taperAmount = 1.0, taperStart = 0.12) {
+            // Helper: smooth per-end taper function. n in [0,1] along extended edge
+            function endTaper(n) {
+                // Only taper within [0, taperStart] and [1-taperStart, 1]
+                if (taperStart <= 0) return 1; // disabled
+                const ease = (x) => x * x * (3 - 2 * x); // smoothstep
+                if (n < taperStart) {
+                    const k = THREE.MathUtils.clamp(n / taperStart, 0, 1);
+                    return THREE.MathUtils.lerp(0, taperAmount, ease(k));
+                }
+                if (n > 1 - taperStart) {
+                    const k = THREE.MathUtils.clamp((1 - n) / taperStart, 0, 1);
+                    return THREE.MathUtils.lerp(0, taperAmount, ease(k));
+                }
+                return 1; // no taper in the middle region
+            }
+            // Guard: no bevel (or unsupported type)
+            if (bevelAmount >= 0.999 || (dieType !== 'd4' && dieType !== 'd8' && dieType !== 'd20' && dieType !== 'd12')) {
+                return baseGeometry;
+            }
+            
+            // Special path for d12 (pentagon faces)
+            if (dieType === 'd12') {
+                return bevelD12Geometry(baseGeometry, bevelAmount, rectangleCount, chamferPeakHeight, edgeExtend, taperAmount, taperStart);
+            }
+            
+            const g = baseGeometry.index ? baseGeometry.toNonIndexed() : baseGeometry.clone();
+            const posAttr = g.getAttribute('position');
+            const faces = []; // {a,b,c, centroid, verts:[v0,v1,v2], inset:[i0,i1,i2]}
+            const aV = new THREE.Vector3(), bV = new THREE.Vector3(), cV = new THREE.Vector3();
+            
+            // Compute face centroids and single inset boundary per face
+            const maxInsetFraction = 0.35;
+            const insetFactor = (1 - bevelAmount) * maxInsetFraction;
+            
+            for (let i = 0; i < posAttr.count; i += 3) {
+                aV.set(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+                bV.set(posAttr.getX(i+1), posAttr.getY(i+1), posAttr.getZ(i+1));
+                cV.set(posAttr.getX(i+2), posAttr.getY(i+2), posAttr.getZ(i+2));
+                const centroid = new THREE.Vector3().copy(aV).add(bV).add(cV).multiplyScalar(1/3);
+                // Compute single inset position per vertex (shrink toward centroid)
+                const inset = [
+                    new THREE.Vector3().copy(aV).lerp(centroid, insetFactor),
+                    new THREE.Vector3().copy(bV).lerp(centroid, insetFactor),
+                    new THREE.Vector3().copy(cV).lerp(centroid, insetFactor)
+                ];
+                faces.push({ a:i, b:i+1, c:i+2, centroid, verts:[aV.clone(), bV.clone(), cV.clone()], inset });
+            }
+
+            // Build edge map: key sorted vertex position string -> { faces: [[faceIdx, localIdx1, localIdx2]] }
+            // For non-indexed geometry, we match by position not index
+            const edgeMap = new Map();
+            function addEdge(v1, v2, faceIdx, localIdx1, localIdx2) {
+                const key1 = `${v1.x.toFixed(6)},${v1.y.toFixed(6)},${v1.z.toFixed(6)}`;
+                const key2 = `${v2.x.toFixed(6)},${v2.y.toFixed(6)},${v2.z.toFixed(6)}`;
+                const key = key1 < key2 ? key1+'|'+key2 : key2+'|'+key1;
+                let rec = edgeMap.get(key);
+                if (!rec) { rec = { faces: [] }; edgeMap.set(key, rec); }
+                if (rec.faces.length < 2) rec.faces.push({ faceIdx, localIdx1, localIdx2 });
+            }
+            faces.forEach((f, fi) => {
+                addEdge(f.verts[0], f.verts[1], fi, 0, 1);
+                addEdge(f.verts[1], f.verts[2], fi, 1, 2);
+                addEdge(f.verts[2], f.verts[0], fi, 2, 0);
+            });
+
+            // Build geometry
+            const newPositions = [];
+            const newIndices = [];
+            let vertCounter = 0;
+            const vertMap = new Map();
+            function pushVertex(v) {
+                const key = v.x.toFixed(6)+','+v.y.toFixed(6)+','+v.z.toFixed(6);
+                let idx = vertMap.get(key);
+                if (idx === undefined) {
+                    newPositions.push(v.x, v.y, v.z);
+                    idx = vertCounter++;
+                    vertMap.set(key, idx);
+                }
+                return idx;
+            }
+
+            // 1. Inner face triangles (inset face boundary)
+            faces.forEach((f, fi) => {
+                const ia = pushVertex(f.inset[0]);
+                const ib = pushVertex(f.inset[1]);
+                const ic = pushVertex(f.inset[2]);
+                newIndices.push(ia, ib, ic);
+            });
+
+            // 2. Edge band: curved surface connecting the two inset edges
+            const N = Math.max(1, Math.floor(rectangleCount)); // length subdivisions
+            const M = 6; // width subdivisions for curve (perpendicular to edge)
+            
+            // Build vertex-to-edges map for intersection detection
+            const vertexEdgeMap = new Map();
+            edgeMap.forEach((e, edgeKey) => {
+                if (e.faces.length !== 2) return;
+                const [faceDataA] = e.faces;
+                const fA = faceDataA.faceIdx;
+                const a1 = faceDataA.localIdx1;
+                const a2 = faceDataA.localIdx2;
+                const fFaceA = faces[fA];
+                const v1 = fFaceA.verts[a1];
+                const v2 = fFaceA.verts[a2];
+                [v1, v2].forEach(v => {
+                    const vKey = `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+                    if (!vertexEdgeMap.has(vKey)) vertexEdgeMap.set(vKey, []);
+                    vertexEdgeMap.get(vKey).push(edgeKey);
+                });
+            });
+            
+            // Compute intersection clipping bounds for each edge
+            const edgeClipBounds = new Map();
+            edgeMap.forEach((e, edgeKey) => {
+                if (e.faces.length !== 2) return;
+                const [faceDataA] = e.faces;
+                const fA = faceDataA.faceIdx;
+                const a1 = faceDataA.localIdx1;
+                const a2 = faceDataA.localIdx2;
+                const fFaceA = faces[fA];
+                const origV1 = fFaceA.verts[a1];
+                const origV2 = fFaceA.verts[a2];
+                
+                // Default: no clipping (full extended range)
+                let clipStart = -edgeExtend;
+                let clipEnd = 1 + edgeExtend;
+                
+                // Check both endpoints for adjacent edges
+                [origV1, origV2].forEach((vertex, endIdx) => {
+                    const vKey = `${vertex.x.toFixed(6)},${vertex.y.toFixed(6)},${vertex.z.toFixed(6)}`;
+                    const adjacentEdges = vertexEdgeMap.get(vKey) || [];
+                    
+                    // If there are adjacent edges meeting at this vertex, prevent overlap
+                    if (adjacentEdges.length > 1) {
+                        // The key insight: when taper is active (taperStart > 0), the bevel tapers down
+                        // and can safely extend a bit past the vertex. When taper is 0, the bevel is
+                        // full-height all the way to the end and MUST stop at the vertex.
+                        
+                        const span = 1 + 2 * edgeExtend;
+                        
+                        if (taperStart > 0.001) {
+                            // With taper: allow extension up to half the taper region
+                            // The taper smoothly reduces the bulge, so some extension is safe
+                            const taperAbsoluteLength = taperStart * span;
+                            const safeExtension = taperAbsoluteLength * 0.4; // Conservative: 40% of taper region
+                            
+                            if (endIdx === 0) {
+                                clipStart = Math.max(clipStart, -edgeExtend + safeExtension);
+                            } else {
+                                clipEnd = Math.min(clipEnd, 1 + edgeExtend - safeExtension);
+                            }
+                        } else {
+                            // No taper (taperStart ≈ 0): full bulge goes all the way to the end
+                            // MUST clip exactly at vertex (s=0 or s=1) to prevent overlap
+                            if (endIdx === 0) {
+                                clipStart = Math.max(clipStart, 0.0);
+                            } else {
+                                clipEnd = Math.min(clipEnd, 1.0);
+                            }
+                        }
+                    }
+                });
+                
+                edgeClipBounds.set(edgeKey, { clipStart, clipEnd });
+            });
+            
+            edgeMap.forEach((e, edgeKey) => {
+                if (e.faces.length !== 2) return;
+                const [faceDataA, faceDataB] = e.faces;
+                const fA = faceDataA.faceIdx;
+                const fB = faceDataB.faceIdx;
+                const a1 = faceDataA.localIdx1;
+                const a2 = faceDataA.localIdx2;
+                const b1 = faceDataB.localIdx1;
+                const b2 = faceDataB.localIdx2;
+                
+                const fFaceA = faces[fA];
+                const fFaceB = faces[fB];
+                
+                // Original edge endpoints (where faces would meet at bevel=1)
+                const origV1 = fFaceA.verts[a1];
+                const origV2 = fFaceA.verts[a2];
+                
+                // Inset edge endpoints from both faces
+                const insetA1 = fFaceA.inset[a1];
+                const insetA2 = fFaceA.inset[a2];
+                const insetB1 = fFaceB.inset[b1];
+                const insetB2 = fFaceB.inset[b2];
+                
+                // Ensure proper ordering: check if B1 corresponds to A1 or A2
+                // by distance (they should be close to the same original vertex)
+                const distB1toA1 = insetB1.distanceTo(insetA1);
+                const distB1toA2 = insetB1.distanceTo(insetA2);
+                
+                let vA_start, vA_end, vB_start, vB_end;
+                if (distB1toA1 < distB1toA2) {
+                    // B1 matches A1, B2 matches A2
+                    vA_start = insetA1;
+                    vA_end = insetA2;
+                    vB_start = insetB1;
+                    vB_end = insetB2;
+                } else {
+                    // B1 matches A2, B2 matches A1
+                    vA_start = insetA1;
+                    vA_end = insetA2;
+                    vB_start = insetB2;
+                    vB_end = insetB1;
+                }
+                
+                // Get clipping bounds for this edge
+                const bounds = edgeClipBounds.get(edgeKey) || { clipStart: -edgeExtend, clipEnd: 1 + edgeExtend };
+                
+                // Create curved surface with N segments along edge length (clipped to bounds)
+                const span = 1 + 2 * edgeExtend;
+                for (let segIdx = 0; segIdx < N; segIdx++) {
+                    const s0 = -edgeExtend + (segIdx / N) * span;
+                    const s1 = -edgeExtend + ((segIdx + 1) / N) * span;
+                    
+                    // Skip segments completely outside clip bounds
+                    if (s1 < bounds.clipStart || s0 > bounds.clipEnd) continue;
+                    
+                    // Clamp segment endpoints to clip bounds
+                    const s0Clipped = Math.max(s0, bounds.clipStart);
+                    const s1Clipped = Math.min(s1, bounds.clipEnd);
+                    
+                    // Skip degenerate segments
+                    if (s1Clipped <= s0Clipped) continue;
+                    
+                    // Allow extrapolation beyond [0,1] for true geometric extension (using clipped values)
+                    const origP0 = new THREE.Vector3().lerpVectors(origV1, origV2, s0Clipped);
+                    const origP1 = new THREE.Vector3().lerpVectors(origV1, origV2, s1Clipped);
+                    const insetA_P0 = new THREE.Vector3().lerpVectors(vA_start, vA_end, s0Clipped);
+                    const insetA_P1 = new THREE.Vector3().lerpVectors(vA_start, vA_end, s1Clipped);
+                    const insetB_P0 = new THREE.Vector3().lerpVectors(vB_start, vB_end, s0Clipped);
+                    const insetB_P1 = new THREE.Vector3().lerpVectors(vB_start, vB_end, s1Clipped);
+                    
+                    // Positions along the edge at this segment (extrapolation allowed)
+                    
+                    // Build M+1 rows of vertices across the width (from insetA to insetB)
+                    const row0 = []; // at s0
+                    const row1 = []; // at s1
+                    
+                    for (let j = 0; j <= M; j++) {
+                        const t = j / M; // 0 = face A, 1 = face B
+                        // Linear interpolation across width at s0 and s1
+                        const baseP0 = new THREE.Vector3().lerpVectors(insetA_P0, insetB_P0, t);
+                        const baseP1 = new THREE.Vector3().lerpVectors(insetA_P1, insetB_P1, t);
+                        // Per-row normalized longitudinal positions (row0 uses s0, row1 uses s1) - use clipped values
+                        const s0Norm = (s0Clipped + edgeExtend) / (1 + 2 * edgeExtend);
+                        const s1Norm = (s1Clipped + edgeExtend) / (1 + 2 * edgeExtend);
+                        const taper0 = endTaper(s0Norm);
+                        const taper1 = endTaper(s1Norm);
+                        
+                        // Calculate how far to push outward (circular arc)
+                        // Peak at t=0.5 (center), zero at edges (t=0 and t=1)
+                        const arcFactor = Math.sin(t * Math.PI); // 0 at edges, 1 at center
+                        
+                        // Direction from inset midpoint to original edge position
+                        const insetMid0 = new THREE.Vector3().lerpVectors(insetA_P0, insetB_P0, 0.5);
+                        const insetMid1 = new THREE.Vector3().lerpVectors(insetA_P1, insetB_P1, 0.5);
+                        const outwardDir0 = new THREE.Vector3().subVectors(origP0, insetMid0);
+                        const outwardDir1 = new THREE.Vector3().subVectors(origP1, insetMid1);
+                        const maxHeight0 = outwardDir0.length();
+                        const maxHeight1 = outwardDir1.length();
+                        
+                        // Apply arc to create curved surface (multiplied by chamferPeakHeight)
+                        const p0 = new THREE.Vector3().copy(baseP0).addScaledVector(
+                            outwardDir0.normalize(), 
+                            arcFactor * maxHeight0 * chamferPeakHeight * taper0
+                        );
+                        const p1 = new THREE.Vector3().copy(baseP1).addScaledVector(
+                            outwardDir1.normalize(), 
+                            arcFactor * maxHeight1 * chamferPeakHeight * taper1
+                        );
+                        
+                        row0.push(p0);
+                        row1.push(p1);
+                    }
+                    
+                    // Connect row0 and row1 with quads
+                    for (let j = 0; j < M; j++) {
+                        const i00 = pushVertex(row0[j]);
+                        const i01 = pushVertex(row0[j + 1]);
+                        const i10 = pushVertex(row1[j]);
+                        const i11 = pushVertex(row1[j + 1]);
+                        
+                        // Two triangles forming quad (correct winding for triangular dice)
+                        newIndices.push(i00, i01, i11);
+                        newIndices.push(i00, i11, i10);
+                    }
+                }
+            });
+
+            const out = new THREE.BufferGeometry();
+            out.setAttribute('position', new THREE.Float32BufferAttribute(newPositions, 3));
+            out.setIndex(newIndices);
+            out.computeVertexNormals();
+            return out;
+        }
+
+        function buildFaceLabelsForPolyhedron(mesh, type) {
+            // Returns a THREE.Group of planes with numbers, one per face
+            const g = mesh.geometry;
+            g.computeVertexNormals();
+            const pos = g.getAttribute('position');
+            const index = g.index;
+            const group = new THREE.Group();
+            const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+            const centroid = new THREE.Vector3();
+            const nrm = new THREE.Vector3();
+
+            // For d12, cluster triangles that belong to the same pentagonal face
+            const clusters = [];
+            const pushCluster = (centroid, normal, triIndices) => {
+                clusters.push({ centroid: centroid.clone(), normal: normal.clone(), tris: [triIndices] });
+            };
+            const tryMergeCluster = (centroid, normal, triIndices) => {
+                const angEps = 1 - Math.cos(2 * Math.PI/180); // ~2 degrees - triangles on same pentagon are coplanar
+                for (const c of clusters) {
+                    const dot = c.normal.dot(normal);
+                    if (1 - dot < angEps) {
+                        // merge - triangles with matching normals are part of same pentagonal face
+                        c.tris.push(triIndices);
+                        // Update centroid to be weighted average of all triangle centroids
+                        const n = c.tris.length;
+                        c.centroid.multiplyScalar(n - 1).add(centroid).divideScalar(n);
+                        // Average normal
+                        c.normal.add(normal).normalize();
+                        return true;
+                    }
+                }
+                return false;
+            };
+
+            if (index) {
+                for (let i = 0; i < index.count; i += 3) {
+                    const a = index.getX(i), b = index.getX(i+1), c = index.getX(i+2);
+                    vA.fromBufferAttribute(pos, a);
+                    vB.fromBufferAttribute(pos, b);
+                    vC.fromBufferAttribute(pos, c);
+                    centroid.copy(vA).add(vB).add(vC).multiplyScalar(1/3);
+                    nrm.copy(vB).sub(vA).cross(vC.clone().sub(vA)).normalize();
+                    // Ensure normal points outward (away from origin)
+                    if (nrm.dot(centroid) < 0) nrm.multiplyScalar(-1);
+                    if (type === 'd12') {
+                        if (!tryMergeCluster(centroid, nrm, [a,b,c])) {
+                            pushCluster(centroid, nrm, [a,b,c]);
+                        }
+                    } else {
+                        clusters.push({ centroid: centroid.clone(), normal: nrm.clone(), tris: [[a,b,c]] });
+                    }
+                }
+            } else {
+                // Non-indexed geometry: triangles are sequential in the position attribute
+                const count = pos.count;
+                for (let i = 0; i < count; i += 3) {
+                    const a = i, b = i+1, c = i+2;
+                    vA.fromBufferAttribute(pos, a);
+                    vB.fromBufferAttribute(pos, b);
+                    vC.fromBufferAttribute(pos, c);
+                    centroid.copy(vA).add(vB).add(vC).multiplyScalar(1/3);
+                    nrm.copy(vB).sub(vA).cross(vC.clone().sub(vA)).normalize();
+                    // Ensure normal points outward (away from origin)
+                    if (nrm.dot(centroid) < 0) nrm.multiplyScalar(-1);
+                    if (type === 'd12') {
+                        if (!tryMergeCluster(centroid, nrm, [a,b,c])) {
+                            pushCluster(centroid, nrm, [a,b,c]);
+                        }
+                    } else {
+                        clusters.push({ centroid: centroid.clone(), normal: nrm.clone(), tris: [[a,b,c]] });
+                    }
+                }
+            }
+
+            // Place labels
+            let label = 1;
+            if (type === 'd4') {
+                // D4 numbering: Assign each vertex a number (1-4).
+                // On each face, place that vertex's number near that vertex.
+                // Result: Each vertex has the same number on all 3 faces meeting at it.
+                
+                // Group vertices by position (tetrahedron has 4 unique positions but 12 vertex indices)
+                const positionMap = new Map(); // position key -> array of vertex indices
+                const vertexSet = new Set();
+                clusters.forEach(cl => {
+                    const tri = cl.tris && cl.tris[0];
+                    if (tri) tri.forEach(v => vertexSet.add(v));
+                });
+                
+                Array.from(vertexSet).forEach(vIdx => {
+                    const v = new THREE.Vector3().fromBufferAttribute(pos, vIdx);
+                    const key = `${v.x.toFixed(6)},${v.y.toFixed(6)},${v.z.toFixed(6)}`;
+                    if (!positionMap.has(key)) {
+                        positionMap.set(key, []);
+                    }
+                    positionMap.get(key).push(vIdx);
+                });
+                
+                // Sort unique positions and assign numbers 1-4
+                const uniquePositions = Array.from(positionMap.keys()).sort();
+                const vertexToNumber = new Map();
+                uniquePositions.forEach((key, i) => {
+                    const indices = positionMap.get(key);
+                    indices.forEach(vIdx => {
+                        vertexToNumber.set(vIdx, i + 1);
+                    });
+                });
+                
+                const toward = (typeof state !== 'undefined' && state && typeof state.d4NumberToward === 'number') ? state.d4NumberToward : 0.82;
+                const scale = (typeof state !== 'undefined' && state && typeof state.d4LabelScale === 'number') ? state.d4LabelScale : 0.26;
+                
+                // For each face, place each of its vertex numbers near that vertex
+                clusters.forEach(cl => {
+                    const tri = cl.tris && cl.tris[0];
+                    if (!tri || tri.length !== 3) return;
+                    
+                    tri.forEach(vIdx => {
+                        const vertexNumber = vertexToNumber.get(vIdx);
+                        if (!vertexNumber) return;
+                        
+                        const vertexPos = new THREE.Vector3().fromBufferAttribute(pos, vIdx);
+                        const p = new THREE.Vector3().copy(cl.centroid).lerp(vertexPos, toward);
+                        
+                        const tex = createNumberTexture(vertexNumber, { strokeWidth: 8, dieType: type });
+                        const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthTest: true });
+                        const plane = new THREE.Mesh(new THREE.PlaneGeometry(1,1), mat);
+                        plane.scale.setScalar(scale);
+                        
+                        // Get face normal
+                        const n = new THREE.Vector3().copy(cl.normal).normalize();
+                        
+                        // Calculate direction from label position to vertex (this is "up" for the number)
+                        const toVertex = new THREE.Vector3().subVectors(vertexPos, p).normalize();
+                        
+                        // Project toVertex onto the face plane to get the "up" direction for the number
+                        const localY = toVertex.clone().sub(n.clone().multiplyScalar(toVertex.dot(n))).normalize();
+                        
+                        // Calculate right direction perpendicular to both normal and localY
+                        const localX = new THREE.Vector3().crossVectors(localY, n).normalize();
+                        
+                        // Build rotation matrix: localX=right, localY=up, n=out (away from face)
+                        const mat3 = new THREE.Matrix4().makeBasis(localX, localY, n);
+                        const quat = new THREE.Quaternion().setFromRotationMatrix(mat3);
+                        plane.quaternion.copy(quat);
+                        
+                        const offset = (typeof state !== 'undefined' && state && typeof state.labelOffset === 'number') ? state.labelOffset : 0.06;
+                        plane.position.copy(p.clone().add(n.multiplyScalar(offset)));
+                        group.add(plane);
+                    });
+                });
+            } else {
+                for (const c of clusters) {
+                    const plane = createNumberLabelPlane(label++, c.normal, c.centroid, 0.45, type);
+                    group.add(plane);
+                }
+            }
+            return group;
+        }
+
+        // --- Ground Plane ---
+    // Extend visible floor to cover [-15,15] in X/Z
+    const groundGeometry = new THREE.PlaneGeometry(30, 30, 30, 30);
+        const groundMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0xFFFFFF,
+            roughness: 0.7,
+            metalness: 0.1,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.5
+        });
+    const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+        // --- Axes and Labels (on floor plane) ---
+        let axesGroup = null;
+        function makeTextSprite(text, color = '#ffffff') {
+            const canvas = document.createElement('canvas');
+            canvas.width = 256; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return new THREE.Sprite();
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'rgba(0,0,0,0)';
+            ctx.fillRect(0,0,canvas.width,canvas.height);
+            ctx.font = '64px Arial, sans-serif';
+            ctx.fillStyle = color;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, canvas.width/2, canvas.height/2);
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.minFilter = THREE.LinearFilter;
+            const material = new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true });
+            const sprite = new THREE.Sprite(material);
+            sprite.scale.set(0.35, 0.175, 1); // world units
+            return sprite;
+        }
+
+        function createAxesGroup(size = 5, step = 1) {
+            const group = new THREE.Group();
+            const axisMatX = new THREE.LineBasicMaterial({ color: 0xff4444 });
+            const axisMatZ = new THREE.LineBasicMaterial({ color: 0x4488ff });
+            const axisMatY = new THREE.LineBasicMaterial({ color: 0x44ff44 });
+
+            // X axis line (red) along +X to -X at Z=0
+            const xGeom = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-size, 0.001, 0),
+                new THREE.Vector3(size, 0.001, 0)
+            ]);
+            group.add(new THREE.Line(xGeom, axisMatX));
+
+            // Z axis line (blue) along +Z to -Z at X=0
+            const zGeom = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, 0.001, -size),
+                new THREE.Vector3(0, 0.001, size)
+            ]);
+            group.add(new THREE.Line(zGeom, axisMatZ));
+
+            // Optional Y axis (green) small stub upwards at origin
+            const yGeom = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(0, 0.001, 0),
+                new THREE.Vector3(0, 0.5, 0)
+            ]);
+            group.add(new THREE.Line(yGeom, axisMatY));
+
+            // Tick marks and numeric labels along X and Z every step
+            const tickLen = 0.06;
+            const tickMat = new THREE.LineBasicMaterial({ color: 0xaaaaaa });
+            const tickGeom = new THREE.BufferGeometry();
+            const verts = [];
+
+            for (let x = -size; x <= size; x += step) {
+                // Skip origin label duplication handled later
+                verts.push(
+                    x, 0.001, -tickLen,
+                    x, 0.001, tickLen
+                );
+                if (x !== 0) {
+                    const sprite = makeTextSprite(String(x));
+                    sprite.position.set(x, 0.02, 0.14);
+                    group.add(sprite);
+                }
+            }
+
+            for (let z = -size; z <= size; z += step) {
+                verts.push(
+                    -tickLen, 0.001, z,
+                    tickLen, 0.001, z
+                );
+                if (z !== 0) {
+                    const sprite = makeTextSprite(String(z));
+                    sprite.position.set(0.14, 0.02, z);
+                    group.add(sprite);
+                }
+            }
+
+            // Origin label
+            const origin = makeTextSprite('0,0');
+            origin.position.set(0.18, 0.02, 0.18);
+            group.add(origin);
+
+            tickGeom.setAttribute(
+                'position',
+                new THREE.Float32BufferAttribute(new Float32Array(verts), 3)
+            );
+            group.add(new THREE.LineSegments(tickGeom, tickMat));
+            return group;
+        }
+
+    axesGroup = createAxesGroup(15, 1);
+    // Set default visibility; will be synced with state later
+    axesGroup.visible = true;
+        scene.add(axesGroup);
+
+        // Physics ground
+        const groundBody = new CANNON.Body({
+            mass: 0,
+            shape: new CANNON.Plane(),
+            material: groundMaterialPhys
+        });
+        groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+        world.addBody(groundBody);
+
+        // --- Simulation State ---
+        const state = {
+            dice1Type: 'd6',
+            dice2Type: 'd6',
+            surfaceType: 'Craps Table',
+            isSimulating: false,
+            isShaking: false,
             wireframe: false,
-            autoRotate: true
+            friction: SURFACE_PRESETS['Craps Table'].friction,
+            restitution: SURFACE_PRESETS['Craps Table'].restitution,
+            showCenterOfMass: false,
+            showPhysicsWireframe: false,
+            showAxes: true,
+            // Max distance from shake center a die can drift while shaking
+            shakeRadius: 0.5,
+            stylePreset: 'ClassicWhite',
+            // Distance (in world units) to lift number planes off the face to avoid z-fighting
+            labelOffset: 0.005,
+            // D4 number label scale (relative size of the number planes on d4 faces)
+            d4LabelScale: 0.6,
+            // D4 number placement along face: 0 = face centroid, 1 = exactly at vertex
+            d4NumberToward: 0.550,
+            // --- Bevel debug controls ---
+            showBevelSliders: true, // Toggle to show/hide bevel sliders in GUI
+            // Edge bevel amount: 1.0 = sharp edges, 0.0 = perfect sphere
+            bevelAmount: 0.5,
+            // Number of rectangular bands per edge for curvature shaping
+            rectangleCount: 1,
+            // Peak height multiplier for curved chamfer (1.0 = reaches original edge position)
+            chamferPeakHeight: 1.0,
+            // Extend beveled strips past edge endpoints so they meet at corners (0.0-0.3)
+            edgeExtend: 0.0,
+            // Taper amount at very ends: 1 = no taper, 0 = fully collapsed to center line
+            taperAmount: 1.0,
+            // Distance from each end (fraction of edge length incl. extension) where taper finishes (0-0.5)
+            taperStart: 0.0,
+            // Physics shape mode: true = use simple geometry, false = use beveled geometry
+            useSimplePhysics: true,
+            // --- Material (Physical) overrides (initialized from preset in applyStylePreset) ---
+            transmission: DICE_STYLE_PRESETS.ClassicWhite.transmission,
+            ior: DICE_STYLE_PRESETS.ClassicWhite.ior,
+            thickness: DICE_STYLE_PRESETS.ClassicWhite.thickness,
+            attenuationDistance: DICE_STYLE_PRESETS.ClassicWhite.attenuationDistance,
+            clearcoat: 0.1,
+            clearcoatRoughness: 0.2,
+            pipBGDarken: 0.15,
+            // --- Lamp configuration ---
+            lampEnabled: true,
+            lampHeight: 6.5,
+            lampIntensity: 100,
+            lampAngle: 1.3,
+            lampPenumbra: 1.0,
+            lampDistance: 170,
+            lampColor: '#ffffff',
+            lampLinks: 23,
+            lampTopHeight: 8.7,
+            lampShadeRadius: 0.4,
+            lampShadeHeight: 0.4,
+            lampShowHelper: false
         };
 
-        // --- ground grid ---
-        const grid = new THREE.GridHelper(20, 20);
-        grid.position.y = -1.2;
-        scene.add(grid);
+        // Disable gravity initially
+        world.gravity.set(0, 0, 0);
 
-        // --- mesh (starts as a box) ---
-        const material = new THREE.MeshStandardMaterial({
-            color: params.color, roughness: 0.5, metalness: 0.1, wireframe: params.wireframe
-        });
-        let mesh = new THREE.Mesh(
-            new THREE.BoxGeometry(params.width, params.height, params.depth,
-                params.segments, params.segments, params.segments),
-            material
+        // Create dice-dice contact material (shared)
+        const diceDiceContact = new CANNON.ContactMaterial(
+            diceMaterial,
+            diceMaterial,
+            {
+                friction: state.friction,
+                restitution: state.restitution,
+                contactEquationStiffness: 1e7,
+                contactEquationRelaxation: 3
+            }
         );
-        scene.add(mesh);
+        world.addContactMaterial(diceDiceContact);
+
+        class Die {
+            constructor(type, position) {
+                this.type = type;
+                this.position = position;
+                // Smooth redirect state (used right after Throw if moving upward)
+                this.redirectActive = false;
+                this.redirectTimer = 0;
+                this.redirectDuration = 0.25; // seconds
+                this.redirectStartVy = 0;
+                this.redirectTargetVy = 0;
+                // Random shake parameters for independent motion
+                this.shakeFreq = {
+                    x: 0.08 + Math.random() * 0.06,  // Random frequency between 0.08-0.14
+                    y: 0.09 + Math.random() * 0.07,  // Random frequency between 0.09-0.16
+                    z: 0.07 + Math.random() * 0.08   // Random frequency between 0.07-0.15
+                };
+                this.shakeAmplitude = {
+                    x: 0.25 + Math.random() * 0.2,  // Random amplitude 0.25-0.45
+                    y: 0.25 + Math.random() * 0.2,
+                    z: 0.25 + Math.random() * 0.2
+                };
+                this.shakePhase = {
+                    x: Math.random() * Math.PI * 2,  // Random starting phase
+                    y: Math.random() * Math.PI * 2,
+                    z: Math.random() * Math.PI * 2
+                };
+                // Higher minimum random rotational speed during shake
+                this.rotationSpeed = {
+                    x: (Math.random() - 0.5) * 1.2 + (Math.random() < 0.5 ? -0.8 : 0.8),  // -1.4..-0.8 or 0.8..1.4
+                    y: (Math.random() - 0.5) * 1.2 + (Math.random() < 0.5 ? -0.8 : 0.8),
+                    z: (Math.random() - 0.5) * 1.2 + (Math.random() < 0.5 ? -0.8 : 0.8)
+                };
+                // Random directional movement parameters
+                this.moveDirection = {
+                    x: (Math.random() - 0.5) * 2,  // Random direction -1 to 1
+                    y: (Math.random() - 0.5) * 2,
+                    z: (Math.random() - 0.5) * 2
+                };
+                // Much faster directional movement during shake
+                this.moveSpeed = 3.0 + Math.random() * 3.0;  // Random speed 2.0 to 4.0
+                this.directionChangeTimer = 0;
+                this.directionChangeInterval = 15 + Math.random() * 15;  // Change direction every 15-30 frames
+                this.createGeometry();
+                this.createPhysics(position);
+                this.createCenterOfMass();
+                this.body.sleep(); // Start inactive
+            }
+
+            createGeometry() {
+                let geometry;
+                const size = 1;
+
+                // Create the visual geometry first
+                switch(this.type) {
+                    case 'd4': {
+                        geometry = new THREE.TetrahedronGeometry(size); // base geometry
+                        break;
+                    }
+                    case 'd8': {
+                        geometry = new THREE.OctahedronGeometry(size);
+                        break;
+                    }
+                    case 'd12': {
+                        geometry = new THREE.DodecahedronGeometry(size);
+                        break;
+                    }
+                    case 'd20': {
+                        geometry = new THREE.IcosahedronGeometry(size);
+                        break;
+                    }
+                    case 'd6':
+                    default: {
+                        // High subdivision (100x100x100) for smooth circular dimples
+                        // This gives us ~30,000 vertices which is acceptable for a few dice
+                        geometry = new THREE.BoxGeometry(size, size, size, 100, 100, 100);
+                        // Add dimples to d6 before beveling
+                        geometry = addDimplesToD6(geometry, size);
+                        break;
+                    }
+                }
+
+                // Store original geometry for label generation (before bevel)
+                const originalGeometry = geometry.clone();
+                
+                // Store reference to original geometry for later use (e.g., style changes)
+                this.originalGeometry = originalGeometry;
+
+                // Apply flat chamfer only for triangular solids (d4,d8,d20)
+                geometry = bevelGeometry(geometry, state.bevelAmount, this.type, state.rectangleCount, state.chamferPeakHeight, state.edgeExtend, state.taperAmount, state.taperStart);
+
+                if (this.type === 'd6') {
+                    // Use per-face materials with pip textures
+                    const materials = createD6Materials();
+                    this.material = materials;
+                    geometry.clearGroups();
+                    // BoxGeometry by default has 6 groups; rebuild groups for safety
+                    const index = geometry.index;
+                    const trisPerFace = index ? index.count / 6 : (geometry.attributes.position.count / 6);
+                    let start = 0;
+                    for (let f = 0; f < 6; f++) {
+                        const count = trisPerFace;
+                        geometry.addGroup(start, count, f);
+                        start += count;
+                    }
+                    this.mesh = new THREE.Mesh(geometry, materials);
+                    this.mesh.castShadow = true;
+                } else {
+                    // Choose material based on style translucency
+                    const usePhysical = ((state.transmission ?? activeStyle.transmission) || 0) > 0.001;
+                    const baseParams = {
+                        color: activeStyle.baseColor,
+                        roughness: activeStyle.roughness,
+                        metalness: activeStyle.metalness,
+                        wireframe: state.wireframe
+                    };
+                    if (usePhysical) {
+                        this.material = new THREE.MeshPhysicalMaterial({
+                            ...baseParams,
+                            transparent: true,
+                            transmission: state.transmission ?? activeStyle.transmission,
+                            ior: state.ior ?? (activeStyle.ior || 1.5),
+                            thickness: state.thickness ?? (activeStyle.thickness || 0.5),
+                            attenuationColor: new THREE.Color(activeStyle.baseColor),
+                            attenuationDistance: state.attenuationDistance ?? (activeStyle.attenuationDistance || 0.8),
+                            clearcoat: state.clearcoat ?? (activeStyle.clearcoat || 0),
+                            clearcoatRoughness: state.clearcoatRoughness ?? (activeStyle.clearcoatRoughness || 0.25)
+                        });
+                    } else {
+                        this.material = new THREE.MeshStandardMaterial(baseParams);
+                    }
+                    this.mesh = new THREE.Mesh(geometry, this.material);
+                    this.mesh.castShadow = true;
+                }
+                // Initialize mesh at intended position to avoid one-frame origin flicker
+                if (this.position) {
+                    this.mesh.position.copy(this.position);
+                }
+                scene.add(this.mesh);
+
+                // Add numeric labels for non-d6 dice as children so they move with the mesh
+                // IMPORTANT: Use original un-beveled geometry for label generation
+                if (this.type !== 'd6') {
+                    const tempMesh = new THREE.Mesh(originalGeometry);
+                    this.labelsGroup = buildFaceLabelsForPolyhedron(tempMesh, this.type);
+                    this.mesh.add(this.labelsGroup);
+                }
+            }
+
+            generateDodecahedronFaces() {
+                // Helper method to generate dodecahedron faces
+                const faces = [];
+                // ... complex face generation logic for dodecahedron ...
+                return faces;
+            }
+
+
+            createPhysics(position) {
+                let shape;
+
+                // For d6, use simple box shape
+                if (this.type === 'd6') {
+                    shape = new CANNON.Box(new CANNON.Vec3(0.5, 0.5, 0.5));
+                } else {
+                    // Choose physics geometry based on state toggle
+                    let physicsGeometry;
+                    const size = 1;
+                    
+                    if (state.useSimplePhysics) {
+                        // Use simple unbeveled geometry for fast physics
+                        switch(this.type) {
+                            case 'd4':
+                                physicsGeometry = new THREE.TetrahedronGeometry(size);
+                                break;
+                            case 'd8':
+                                physicsGeometry = new THREE.OctahedronGeometry(size);
+                                break;
+                            case 'd12':
+                                physicsGeometry = new THREE.DodecahedronGeometry(size);
+                                break;
+                            case 'd20':
+                                physicsGeometry = new THREE.IcosahedronGeometry(size);
+                                break;
+                            default:
+                                physicsGeometry = this.mesh.geometry;
+                        }
+                    } else {
+                        // Use the beveled visual geometry for accurate but slower physics
+                        physicsGeometry = this.mesh.geometry;
+                    }
+                    
+                    const geometry = physicsGeometry;
+                    const positionAttr = geometry.getAttribute('position');
+                    const hasIndex = !!geometry.index;
+                    const indexArray = hasIndex ? geometry.index.array : null;
+
+                    // Deduplicate vertices with epsilon key
+                    const pos = positionAttr.array;
+                    const count = positionAttr.count;
+                    const verts = [];
+                    const keyMap = new Map();
+                    const remap = new Array(count);
+                    
+                    // Use more aggressive deduplication for beveled geometry to reduce vertex count
+                    const precision = state.useSimplePhysics ? 5 : 4; // Less precision for beveled = fewer vertices
+                    const keyOf = (x,y,z) => `${x.toFixed(precision)},${y.toFixed(precision)},${z.toFixed(precision)}`;
+                    
+                    for (let i = 0; i < count; i++) {
+                        const x = pos[i*3], y = pos[i*3+1], z = pos[i*3+2];
+                        const k = keyOf(x,y,z);
+                        let idxNew = keyMap.get(k);
+                        if (idxNew === undefined) {
+                            idxNew = verts.length;
+                            keyMap.set(k, idxNew);
+                            verts.push(new CANNON.Vec3(x,y,z));
+                        }
+                        remap[i] = idxNew;
+                    }
+
+                    // Compute centroid for orientation check
+                    const center = new THREE.Vector3();
+                    const tverts = verts.map(v => new THREE.Vector3(v.x, v.y, v.z));
+                    tverts.forEach(v => center.add(v));
+                    if (tverts.length) center.multiplyScalar(1/tverts.length);
+
+                    // Build faces as triangles, re-oriented outward
+                    const faces = [];
+                    const faceSet = new Set(); // Deduplicate faces
+                    const oriA = new THREE.Vector3();
+                    const oriB = new THREE.Vector3();
+                    const normal = new THREE.Vector3();
+                    const minAreaSq = 1e-10; // Skip very small triangles
+                    
+                    const addTri = (ia,ib,ic) => {
+                        if (ia===ib || ib===ic || ic===ia) return;
+                        const a=tverts[ia], b=tverts[ib], c=tverts[ic];
+                        if (!a||!b||!c) return;
+                        oriA.copy(b).sub(a);
+                        oriB.copy(c).sub(a);
+                        normal.copy(oriA).cross(oriB);
+                        const areaSq = normal.lengthSq();
+                        if (areaSq < minAreaSq) return; // Skip degenerate triangles
+                        
+                        const centroid = new THREE.Vector3().add(a).add(b).add(c).multiplyScalar(1/3);
+                        
+                        // Create face with correct winding
+                        let face;
+                        if (normal.dot(centroid.clone().sub(center)) < 0) {
+                            face = [ia, ic, ib];
+                        } else {
+                            face = [ia, ib, ic];
+                        }
+                        
+                        // Deduplicate faces
+                        const faceKey = face.slice().sort((a,b) => a-b).join(',');
+                        if (!faceSet.has(faceKey)) {
+                            faceSet.add(faceKey);
+                            faces.push(face);
+                        }
+                    };
+                    if (hasIndex) {
+                        for (let i=0;i<indexArray.length;i+=3){
+                            addTri(remap[indexArray[i]], remap[indexArray[i+1]], remap[indexArray[i+2]]);
+                        }
+                    } else {
+                        for (let i=0;i<count;i+=3){
+                            addTri(remap[i], remap[i+1], remap[i+2]);
+                        }
+                    }
+
+                    try {
+                        // Cannon.js 0.6.2 expects positional args: (vertices, faces)
+                        shape = new CANNON.ConvexPolyhedron(verts, faces);
+                        // Wireframe from faces
+                        const wfGeom = new THREE.BufferGeometry();
+                        const wfVerts = [];
+                        faces.forEach(face => {
+                            for (let i = 0; i < face.length; i++) {
+                                const a = face[i];
+                                const b = face[(i+1)%face.length];
+                                wfVerts.push(
+                                    verts[a].x, verts[a].y, verts[a].z,
+                                    verts[b].x, verts[b].y, verts[b].z
+                                );
+                            }
+                        });
+                        wfGeom.setAttribute('position', new THREE.Float32BufferAttribute(wfVerts, 3));
+                        const wfMat = new THREE.LineBasicMaterial({ color: 0xff00ff, linewidth: 2 });
+                        this.physicsWireframe = new THREE.LineSegments(wfGeom, wfMat);
+                        scene.add(this.physicsWireframe);
+                        this.physicsWireframe.visible = state.showPhysicsWireframe;
+                    } catch (e) {
+                        console.error('Convex from geometry failed; retaining visual match via Trimesh (no die-die collisions):', e);
+                        // Fallback: Trimesh (exact shape but limited dynamic-dynamic collisions)
+                        const positionAttr2 = geometry.getAttribute('position');
+                        const posArray2 = positionAttr2.array;
+                        let indexArray2 = geometry.index ? geometry.index.array : null;
+                        if (!indexArray2) {
+                            indexArray2 = new (positionAttr2.count > 65535 ? Uint32Array : Uint16Array)(positionAttr2.count);
+                            for (let i = 0; i < positionAttr2.count; i++) indexArray2[i] = i;
+                        }
+                        const v2 = (posArray2 instanceof Float32Array) ? posArray2 : new Float32Array(posArray2);
+                        const i2 = (indexArray2 instanceof Uint16Array || indexArray2 instanceof Uint32Array) ? indexArray2 : new (positionAttr2.count > 65535 ? Uint32Array : Uint16Array)(indexArray2);
+                        shape = new CANNON.Trimesh(v2, i2);
+                        const wireframeGeometry = new THREE.BufferGeometry();
+                        const wireframeVertices = [];
+                        for (let j = 0; j < i2.length; j += 3) {
+                            const a = i2[j], b = i2[j + 1], c = i2[j + 2];
+                            wireframeVertices.push(
+                                v2[a * 3], v2[a * 3 + 1], v2[a * 3 + 2],
+                                v2[b * 3], v2[b * 3 + 1], v2[b * 3 + 2],
+                                v2[b * 3], v2[b * 3 + 1], v2[b * 3 + 2],
+                                v2[c * 3], v2[c * 3 + 1], v2[c * 3 + 2],
+                                v2[c * 3], v2[c * 3 + 1], v2[c * 3 + 2],
+                                v2[a * 3], v2[a * 3 + 1], v2[a * 3 + 2]
+                            );
+                        }
+                        wireframeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(wireframeVertices, 3));
+                        const wireframeMaterial = new THREE.LineBasicMaterial({ color: 0xff00ff, linewidth: 2 });
+                        this.physicsWireframe = new THREE.LineSegments(wireframeGeometry, wireframeMaterial);
+                        scene.add(this.physicsWireframe);
+                        this.physicsWireframe.visible = state.showPhysicsWireframe;
+                    }
+                }
+
+                // Create the physics body
+                this.body = new CANNON.Body({
+                    mass: 1,
+                    position: new CANNON.Vec3(position.x, position.y, position.z),
+                    shape: shape,
+                    material: diceMaterial,
+                    allowSleep: true,
+                    linearDamping: 0.3,
+                    angularDamping: 0.3,
+                    sleepSpeedLimit: 0.15, // Sleep faster when using beveled physics
+                    sleepTimeLimit: 0.3, // Reduced from 1.0 for faster sleep
+                    fixedRotation: false,
+                    collisionFilterGroup: 1,
+                    collisionFilterMask: 1
+                });
+                
+                // Set collision response parameters
+                this.body.material.friction = 0.5;
+                this.body.material.restitution = 0.3;
+                
+                // Remove redundant sleep parameters (already set in constructor)
+                // this.body.sleepSpeedLimit = 0.2;
+                // this.body.sleepTimeLimit = 1.0;
+
+                // Add contact material properties
+                const groundDiceContact = new CANNON.ContactMaterial(
+                    groundBody.material,
+                    this.body.material,
+                    {
+                        friction: state.friction,
+                        restitution: state.restitution,
+                        contactEquationStiffness: 1e7,
+                        contactEquationRelaxation: 3
+                    }
+                );
+                world.addContactMaterial(groundDiceContact);
+                world.addBody(this.body);
+
+                // Sync initial transforms so visuals are not left at origin
+                this.mesh.position.copy(this.body.position);
+                this.mesh.quaternion.copy(this.body.quaternion);
+                if (this.physicsWireframe) {
+                    this.physicsWireframe.position.copy(this.body.position);
+                    this.physicsWireframe.quaternion.copy(this.body.quaternion);
+                }
+            }
+
+            createCenterOfMass() {
+                const geometry = new THREE.SphereGeometry(0.05);
+                const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+                this.comMesh = new THREE.Mesh(geometry, material);
+                this.mesh.add(this.comMesh);
+            }
+
+            updateMesh() {
+                if (state.isShaking && !state.isSimulating) {
+                    // During shake, let physics handle everything - just apply random forces
+                    // Don't manually set position - let velocity move the dice naturally
+                    
+                    // Advance shake timer (approximate fixed step)
+                    if (this.shakeElapsed === undefined) this.shakeElapsed = 0;
+                    this.shakeElapsed += 1/60;
+
+                    this.shakePhase.x += this.shakeFreq.x;
+                    this.shakePhase.y += this.shakeFreq.y;
+                    this.shakePhase.z += this.shakeFreq.z;
+
+                    // Randomly change direction periodically
+                    this.directionChangeTimer++;
+                    if (this.directionChangeTimer >= this.directionChangeInterval) {
+                        this.moveDirection = {
+                            x: (Math.random() - 0.5) * 2,
+                            y: (Math.random() - 0.5) * 2,
+                            z: (Math.random() - 0.5) * 2
+                        };
+                        this.directionChangeTimer = 0;
+                        this.directionChangeInterval = 15 + Math.random() * 15;
+                    }
+
+                    // Apply oscillating forces + much faster directional movement
+                    const forceScale = 8.0; // Strong oscillation forces for vigorous shaking
+                    const directionalForce = 20.0; // Much stronger directional movement
+                    let fx = Math.cos(this.shakePhase.x) * this.shakeAmplitude.x * this.shakeFreq.x * forceScale + this.moveDirection.x * directionalForce * this.moveSpeed;
+                    let fy = Math.cos(this.shakePhase.y) * this.shakeAmplitude.y * this.shakeFreq.y * forceScale + this.moveDirection.y * directionalForce * this.moveSpeed;
+                    let fz = Math.cos(this.shakePhase.z) * this.shakeAmplitude.z * this.shakeFreq.z * forceScale + this.moveDirection.z * directionalForce * this.moveSpeed;
+
+                    // Fast momentum build: temporary boost that decays quickly
+                    const boost = 1 + 2 * Math.exp(-this.shakeElapsed * 60);
+                    fx *= boost; fy *= boost; fz *= boost;
+
+                    // Containment: keep the die within a spherical radius around shakeCenter
+                    if (this.shakeCenter) {
+                        const dx = this.body.position.x - this.shakeCenter.x;
+                        const dy = this.body.position.y - this.shakeCenter.y;
+                        const dz = this.body.position.z - this.shakeCenter.z;
+                        const distSq = dx*dx + dy*dy + dz*dz;
+                        const radius = state.shakeRadius;
+                        const rSq = radius * radius;
+                        if (distSq > rSq) {
+                            const dist = Math.sqrt(distSq);
+                            const over = dist - radius;
+                            const invDist = 1.0 / dist;
+                            const nx = dx * invDist, ny = dy * invDist, nz = dz * invDist; // outward normal
+                            const containK = 120.0; // spring strength back toward center
+                            // Inward force (towards center) proportional to overflow
+                            fx += -nx * containK * over;
+                            fy += -ny * containK * over;
+                            fz += -nz * containK * over;
+
+                            // Additional braking if velocity is pointing outward (to prevent jitter at boundary)
+                            const vx = this.body.velocity.x, vy = this.body.velocity.y, vz = this.body.velocity.z;
+                            const outwardVel = vx*nx + vy*ny + vz*nz; // scalar along outward normal
+                            if (outwardVel > 0) {
+                                const brakeK = 25.0;
+                                fx += -nx * outwardVel * brakeK;
+                                fy += -ny * outwardVel * brakeK;
+                                fz += -nz * outwardVel * brakeK;
+                            }
+                        }
+                    }
+
+                    this.body.force.set(fx, fy, fz);
+
+                    // Apply rotational forces (torque)
+                    const rotationQuat = new CANNON.Quaternion();
+                    rotationQuat.setFromEuler(
+                        this.rotationSpeed.x,
+                        this.rotationSpeed.y,
+                        this.rotationSpeed.z
+                    );
+                    this.body.quaternion = this.body.quaternion.mult(rotationQuat);
+                    this.body.quaternion.normalize();
+
+                    // Apply torque for continuous tumbling - increased for faster rotation
+                    const torqueScale = 3.0;
+                    this.body.torque.set(
+                        this.rotationSpeed.x * torqueScale,
+                        this.rotationSpeed.y * torqueScale,
+                        this.rotationSpeed.z * torqueScale
+                    );
+
+                    // Update visuals from physics body - physics handles position via velocity
+                    this.mesh.position.copy(this.body.position);
+                    this.mesh.quaternion.copy(this.body.quaternion);
+                    if (this.physicsWireframe) {
+                        this.physicsWireframe.position.copy(this.body.position);
+                        this.physicsWireframe.quaternion.copy(this.body.quaternion);
+                    }
+                } else {
+                    // Update from physics
+                    this.mesh.position.copy(this.body.position);
+                    this.mesh.quaternion.copy(this.body.quaternion);
+                    if (this.physicsWireframe) {
+                        this.physicsWireframe.position.copy(this.body.position);
+                        this.physicsWireframe.quaternion.copy(this.body.quaternion);
+                    }
+                    // Handle smooth redirection after throw (only active briefly)
+                    if (state.isSimulating && this.redirectActive) {
+                        // advance timer
+                        this.redirectTimer += 1/60;
+                        const t = Math.min(this.redirectTimer / this.redirectDuration, 1);
+                        // ease curve (smoothstep): 3t^2 - 2t^3
+                        const ease = t*t*(3 - 2*t);
+                        const desiredVy = this.redirectStartVy + (this.redirectTargetVy - this.redirectStartVy) * ease;
+                        // current vertical velocity
+                        const currentVy = this.body.velocity.y;
+                        const diffVy = desiredVy - currentVy;
+                        // Apply a force to adjust vertical velocity smoothly (F = m * dv/dt)
+                        // Approximate dv needed over this frame: diffVy * 60 (per second)
+                        const adjustForceY = diffVy * this.body.mass * 60;
+                        // Limit force to prevent unnatural spikes
+                        const maxF = 150;
+                        const fy = Math.max(-maxF, Math.min(maxF, adjustForceY));
+                        // Apply only vertical correction force
+                        this.body.force.y += fy;
+                        // End redirection
+                        if (t >= 1) {
+                            this.redirectActive = false;
+                        }
+                    }
+                }
+            }
+
+            setWireframe(wireframe) {
+                if (Array.isArray(this.material)) {
+                    this.material.forEach(m => m.wireframe = wireframe);
+                } else {
+                    this.material.wireframe = wireframe;
+                }
+                if (this.labelsGroup) {
+                    // Labels should not be wireframe; ignore
+                }
+            }
+
+            applyStyle() {
+                // Update materials and label textures based on activeStyle
+                if (this.type === 'd6') {
+                    // Re-create per-face materials to handle transmission changes
+                    if (Array.isArray(this.material)) {
+                        this.material.forEach(m => m.dispose && m.dispose());
+                    }
+                    const mats = createD6Materials();
+                    this.material = mats;
+                    this.mesh.material = mats;
+                } else if (this.material && this.material.isMaterial) {
+                    const usePhysical = ((state.transmission ?? activeStyle.transmission) || 0) > 0.001;
+                    // If current material type doesn't match desired, replace
+                    const wantsPhysical = usePhysical && !(this.material instanceof THREE.MeshPhysicalMaterial);
+                    const wantsStandard = !usePhysical && !(this.material instanceof THREE.MeshStandardMaterial);
+                    if (wantsPhysical || wantsStandard) {
+                        // Dispose old material and create new one
+                        this.material.dispose && this.material.dispose();
+                        const baseParams = {
+                            color: activeStyle.baseColor,
+                            roughness: activeStyle.roughness,
+                            metalness: activeStyle.metalness,
+                            wireframe: state.wireframe,
+                            side: THREE.DoubleSide
+                        };
+                        if (usePhysical) {
+                            this.material = new THREE.MeshPhysicalMaterial({
+                                ...baseParams,
+                                transparent: true,
+                                transmission: state.transmission ?? activeStyle.transmission,
+                                ior: state.ior ?? (activeStyle.ior || 1.5),
+                                thickness: state.thickness ?? (activeStyle.thickness || 0.5),
+                                attenuationColor: new THREE.Color(activeStyle.baseColor),
+                                attenuationDistance: state.attenuationDistance ?? (activeStyle.attenuationDistance || 0.8),
+                                clearcoat: state.clearcoat ?? (activeStyle.clearcoat || 0),
+                                clearcoatRoughness: state.clearcoatRoughness ?? (activeStyle.clearcoatRoughness || 0.25)
+                                // Note: depthWrite true (default) for proper light transmission effect
+                            });
+                        } else {
+                            this.material = new THREE.MeshStandardMaterial(baseParams);
+                        }
+                        this.mesh.material = this.material;
+                    } else {
+                        // Same material class; just update parameters
+                        this.material.color.setHex(activeStyle.baseColor);
+                        this.material.roughness = activeStyle.roughness;
+                        this.material.metalness = activeStyle.metalness;
+                        this.material.side = THREE.DoubleSide;
+                        if (usePhysical) {
+                            this.material.transparent = true;
+                            this.material.transmission = state.transmission ?? activeStyle.transmission;
+                            this.material.ior = state.ior ?? (activeStyle.ior || 1.5);
+                            this.material.thickness = state.thickness ?? (activeStyle.thickness || 0.5);
+                            this.material.attenuationColor = new THREE.Color(activeStyle.baseColor);
+                            this.material.attenuationDistance = state.attenuationDistance ?? (activeStyle.attenuationDistance || 0.8);
+                            this.material.clearcoat = state.clearcoat ?? (activeStyle.clearcoat || 0);
+                            this.material.clearcoatRoughness = state.clearcoatRoughness ?? (activeStyle.clearcoatRoughness || 0.25);
+                            // Ensure depthWrite is true for proper transparency
+                            this.material.depthWrite = true;
+                        }
+                        this.material.needsUpdate = true;
+                    }
+                    // Rebuild numeric labels to update text colors
+                    if (this.labelsGroup) {
+                        // Remove old labels from the mesh and dispose
+                        this.mesh.remove(this.labelsGroup);
+                        this.labelsGroup.children.forEach(c => {
+                            if (c.material && c.material.map) c.material.map.dispose();
+                            c.material.dispose();
+                            c.geometry.dispose();
+                        });
+                        // Rebuild and attach new labels with updated style
+                        // IMPORTANT: Use original unbeveled geometry, not beveled mesh
+                        const tempMesh = new THREE.Mesh(this.originalGeometry);
+                        this.labelsGroup = buildFaceLabelsForPolyhedron(tempMesh, this.type);
+                        this.mesh.add(this.labelsGroup);
+                    }
+                }
+            }
+
+            reset() {
+                this.body.position.copy(this.position);
+                this.body.velocity.set(0, 0, 0);
+                this.body.angularVelocity.set(0, 0, 0);
+                this.body.quaternion.set(0, 0, 0, 1);
+                this.body.sleep();
+                this.shakeCenter = null;
+                // Regenerate random shake parameters for next shake
+                this.shakeFreq = {
+                    x: 0.08 + Math.random() * 0.06,
+                    y: 0.09 + Math.random() * 0.07,
+                    z: 0.07 + Math.random() * 0.08
+                };
+                this.shakeAmplitude = {
+                    x: 0.25 + Math.random() * 0.2,
+                    y: 0.25 + Math.random() * 0.2,
+                    z: 0.25 + Math.random() * 0.2
+                };
+                this.shakePhase = {
+                    x: Math.random() * Math.PI * 2,
+                    y: Math.random() * Math.PI * 2,
+                    z: Math.random() * Math.PI * 2
+                };
+                this.rotationSpeed = {
+                    x: (Math.random() - 0.5) * 1.2 + (Math.random() < 0.5 ? -0.8 : 0.8),
+                    y: (Math.random() - 0.5) * 1.2 + (Math.random() < 0.5 ? -0.8 : 0.8),
+                    z: (Math.random() - 0.5) * 1.2 + (Math.random() < 0.5 ? -0.8 : 0.8)
+                };
+                // Reset directional movement parameters
+                this.moveDirection = {
+                    x: (Math.random() - 0.5) * 2,
+                    y: (Math.random() - 0.5) * 2,
+                    z: (Math.random() - 0.5) * 2
+                };
+                this.moveSpeed = 2.0 + Math.random() * 2.0;
+                this.directionChangeTimer = 0;
+                this.directionChangeInterval = 15 + Math.random() * 15;
+            }
+        }
+
+        // Create dice
+        const dice = [
+            new Die('d6', new THREE.Vector3(-1, 3, 0)),
+            new Die('d6', new THREE.Vector3(1, 3, 0))
+        ];
 
         // --- GUI ---
         const gui = new GUI();
-        gui.add(params, 'shape', ['Box', 'Sphere', 'Cylinder']).name('Shape').onChange(rebuild);
+        
+        // Dice controls
+    const diceFolder = gui.addFolder('Dice Configuration');
+    diceFolder.add(state, 'dice1Type', Object.keys(DICE_TYPES)).name('Die 1 Type').onChange((v) => updateDice(0, v));
+    diceFolder.add(state, 'dice2Type', Object.keys(DICE_TYPES)).name('Die 2 Type').onChange((v) => updateDice(1, v));
+        diceFolder.add(state, 'showCenterOfMass').name('Show Center of Mass').onChange(toggleCenterOfMass);
+        diceFolder.add(state, 'wireframe').name('Wireframe').onChange(toggleWireframe);
+    const styleFolder = gui.addFolder('Style');
+    // Keep references to style controllers so we can refresh their UI when presets change
+    let ctrlTransmission, ctrlIOR, ctrlThickness, ctrlAttenuationDistance, ctrlClearcoat, ctrlClearcoatRoughness;
+    styleFolder.add(state, 'stylePreset', Object.keys(DICE_STYLE_PRESETS)).name('Style Preset').onChange(() => {
+        applyStylePreset();
+    });
+    styleFolder.add(state, 'labelOffset', 0.0, 0.1, 0.005).name('Label Offset').onChange(() => {
+        rebuildLabels();
+    });
+    // Physical material sliders
+    // Larger ranges for dramatic effects
+    ctrlTransmission = styleFolder.add(state, 'transmission', 0.0, 1.0, 0.01).name('Transmission').onChange(() => dice.forEach(d => d.applyStyle()));
+    ctrlIOR = styleFolder.add(state, 'ior', 1.0, 3.0, 0.01).name('IOR').onChange(() => dice.forEach(d => d.applyStyle()));
+    ctrlThickness = styleFolder.add(state, 'thickness', 0.0, 5.0, 0.01).name('Thickness').onChange(() => dice.forEach(d => d.applyStyle()));
+    ctrlAttenuationDistance = styleFolder.add(state, 'attenuationDistance', 0.05, 10.0, 0.05).name('Attenuation Dist').onChange(() => dice.forEach(d => d.applyStyle()));
+    ctrlClearcoat = styleFolder.add(state, 'clearcoat', 0.0, 1.0, 0.01).name('Clearcoat').onChange(() => dice.forEach(d => d.applyStyle()));
+    ctrlClearcoatRoughness = styleFolder.add(state, 'clearcoatRoughness', 0.0, 1.0, 0.01).name('Clearcoat Rough').onChange(() => dice.forEach(d => d.applyStyle()));
+    styleFolder.add(state, 'pipBGDarken', 0.0, 0.9, 0.01).name('Pip BG Darken').onChange(() => dice.forEach(d => d.applyStyle()));
 
-        const gBox = gui.addFolder('Box');
-        gBox.add(params, 'width', 0.1, 4, 0.1).onChange(rebuild);
-        gBox.add(params, 'height', 0.1, 4, 0.1).onChange(rebuild);
-        gBox.add(params, 'depth', 0.1, 4, 0.1).onChange(rebuild);
-        gBox.add(params, 'segments', 1, 32, 1).name('Segments').onChange(rebuild);
+    // Bevel sliders group (conditionally shown)
+    let bevelSlidersFolder = null;
+    function updateBevelSlidersVisibility() {
+        if (bevelSlidersFolder) {
+            bevelSlidersFolder.domElement.style.display = state.showBevelSliders ? '' : 'none';
+        }
+    }
+    bevelSlidersFolder = styleFolder.addFolder('Bevel Debug Sliders');
+    bevelSlidersFolder.add(state, 'bevelAmount', 0.0, 1.0, 0.01).name('Edge Bevel').onChange(() => { rebuildGeometry(); });
+    bevelSlidersFolder.add(state, 'rectangleCount', 1, 64, 1).name('Edge Rectangles').onChange(() => { rebuildGeometry(); });
+    bevelSlidersFolder.add(state, 'chamferPeakHeight', 0.0, 2.0, 0.05).name('Chamfer Peak Height').onChange(() => { rebuildGeometry(); });
+    bevelSlidersFolder.add(state, 'edgeExtend', 0.0, 0.3, 0.01).name('Bevel Extend').onChange(() => { rebuildGeometry(); });
+    bevelSlidersFolder.add(state, 'taperAmount', 0.0, 1.0, 0.01).name('Taper Amount').onChange(() => { rebuildGeometry(); });
+    bevelSlidersFolder.add(state, 'taperStart', 0.0, 0.5, 0.01).name('Taper Start').onChange(() => { rebuildGeometry(); });
+    updateBevelSlidersVisibility();
 
-        const gSphere = gui.addFolder('Sphere');
-        gSphere.add(params, 'radius', 0.1, 3, 0.05).onChange(rebuild);
-        gSphere.add(params, 'widthSegments', 3, 64, 1).name('Width Seg').onChange(rebuild);
-        gSphere.add(params, 'heightSegments', 2, 32, 1).name('Height Seg').onChange(rebuild);
+        // Surface controls
+        const surfaceFolder = gui.addFolder('Surface Properties');
+        const surfaceTypeController = surfaceFolder.add(state, 'surfaceType', Object.keys(SURFACE_PRESETS)).name('Surface Type');
+        const frictionController = surfaceFolder.add(state, 'friction', 0, 1, 0.01).name('Friction');
+        const restitutionController = surfaceFolder.add(state, 'restitution', 0, 1, 0.01).name('Bounce');
 
-        gui.addColor(params, 'color').onChange(value => material.color.set(value));
-        gui.add(params, 'wireframe').onChange(value => material.wireframe = value);
-        gui.add(params, 'autoRotate');
+        surfaceTypeController.onChange(updateSurface);
+        frictionController.onChange(updatePhysics);
+        restitutionController.onChange(updatePhysics);
 
-        function rebuild() {
-            scene.remove(mesh);
-            let geometry;
+    // Shake settings
+    const shakeFolder = gui.addFolder('Shake Settings');
+    shakeFolder.add(state, 'shakeRadius', 0.1, 2, 0.05).name('Shake Radius');
+    // Debug / Visualization
+    const debugFolder = gui.addFolder('Debug');
+    debugFolder.add(state, 'showPhysicsWireframe').name('Physics Wireframe').onChange(togglePhysicsWireframe);
+    debugFolder.add(state, 'showAxes').name('Show Axes').onChange(toggleAxes);
+    debugFolder.add(state, 'useSimplePhysics').name('Simple Physics').onChange(() => {
+        // Rebuild all dice with new physics
+        dice.forEach((die, index) => {
+            updateDice(index, die.type);
+        });
+    });
+    // Lamp controls
+    const lampFolder = gui.addFolder('Lamp');
+    lampFolder.add(state, 'lampEnabled').name('Enabled').onChange(updateLampFromState);
+    lampFolder.add(state, 'lampTopHeight', 2.0, 10.0, 0.05).name('Ceiling Height').onChange(updateLampFromState);
+    lampFolder.add(state, 'lampHeight', 0.5, 9.5, 0.05).name('Lamp Height').onChange(updateLampFromState);
+    lampFolder.add(state, 'lampShadeRadius', 0.1, 3.0, 0.05).name('Shade Radius').onChange(updateLampFromState);
+    lampFolder.add(state, 'lampShadeHeight', 0.1, 3.0, 0.05).name('Shade Height').onChange(updateLampFromState);
+    lampFolder.add(state, 'lampLinks', 3, 120, 1).name('Chain Links').onChange(updateLampFromState);
+    lampFolder.add(state, 'lampIntensity', 0.0, 100.0, 0.5).name('Intensity').onChange(() => { if (lampLight) lampLight.intensity = state.lampIntensity; });
+    lampFolder.add(state, 'lampAngle', 0.05, 1.3, 0.005).name('Angle').onChange(() => { if (lampLight) lampLight.angle = state.lampAngle; });
+    lampFolder.add(state, 'lampPenumbra', 0.0, 1.0, 0.01).name('Penumbra').onChange(() => { if (lampLight) lampLight.penumbra = state.lampPenumbra; });
+    lampFolder.add(state, 'lampDistance', 1, 200, 1).name('Distance').onChange(() => { if (lampLight) lampLight.distance = state.lampDistance; });
+    lampFolder.addColor(state, 'lampColor').name('Color').onChange(() => { if (lampLight) lampLight.color.set(state.lampColor); });
+    lampFolder.add(state, 'lampShowHelper').name('Show Beam').onChange(updateLampFromState);
+    // Sync initial visibility to state after GUI/toggles are wired
+    togglePhysicsWireframe();
+    toggleAxes();
+    // Apply initial style preset
+    applyStylePreset();
+    // Initialize lamp
+    updateLampFromState();
 
-            switch (params.shape) {
-                case 'Box':
-                    geometry = new THREE.BoxGeometry(
-                        params.width, params.height, params.depth,
-                        params.segments, params.segments, params.segments
-                    );
-                    break;
-                case 'Sphere':
-                    geometry = new THREE.SphereGeometry(
-                        params.radius, params.widthSegments, params.heightSegments
-                    );
-                    break;
-                case 'Cylinder':
-                    geometry = new THREE.CylinderGeometry(
-                        params.radius, params.radius, params.height,
-                        params.radialSegments, params.segments
-                    );
-                    break;
+        function updateDice(index, newType) {
+            // Resolve desired type (use newType if provided by GUI callback)
+            const type = newType || (index === 0 ? state.dice1Type : state.dice2Type);
+            // Ensure state reflects the new type
+            if (newType) {
+                if (index === 0) state.dice1Type = newType; else state.dice2Type = newType;
             }
-
-            mesh = new THREE.Mesh(geometry, material);
-            scene.add(mesh);
+            // Remove old die
+            scene.remove(dice[index].mesh);
+            world.removeBody(dice[index].body);
+            // Remove wireframe if present
+            if (dice[index].physicsWireframe) scene.remove(dice[index].physicsWireframe);
+            // Labels are children of the mesh; removing the mesh will remove labels too
+            // Set new position for new die (reset to initial position)
+            const x = index === 0 ? -1 : 1;
+            const position = new THREE.Vector3(x, 3, 0);
+            dice[index] = new Die(type, position);
+            dice[index].setWireframe(state.wireframe);
+            // Respect current COM visibility
+            dice[index].comMesh.visible = state.showCenterOfMass;
+            // Respect physics wireframe visibility
+            if (dice[index].physicsWireframe) dice[index].physicsWireframe.visible = state.showPhysicsWireframe;
+            // Ensure labels visibility matches axes preference (always visible regardless of axes)
+            // Update physics contacts
+            updatePhysics();
         }
 
-        // --- animation / sizing ---
+        function applyStylePreset() {
+            // Update activeStyle and reset sliders to preset values
+            activeStyle = DICE_STYLE_PRESETS[state.stylePreset] || DICE_STYLE_PRESETS.ClassicWhite;
+
+            // Reset physical material sliders to preset defaults
+            if (activeStyle.transmission !== undefined) state.transmission = activeStyle.transmission;
+            if (activeStyle.ior !== undefined) state.ior = activeStyle.ior;
+            if (activeStyle.thickness !== undefined) state.thickness = activeStyle.thickness;
+            if (activeStyle.attenuationDistance !== undefined) state.attenuationDistance = activeStyle.attenuationDistance;
+            if (activeStyle.clearcoat !== undefined) state.clearcoat = activeStyle.clearcoat;
+            if (activeStyle.clearcoatRoughness !== undefined) state.clearcoatRoughness = activeStyle.clearcoatRoughness;
+
+            // Manually refresh controller displays (lil-gui doesn't auto-refresh on programmatic changes)
+            if (ctrlTransmission) ctrlTransmission.updateDisplay();
+            if (ctrlIOR) ctrlIOR.updateDisplay();
+            if (ctrlThickness) ctrlThickness.updateDisplay();
+            if (ctrlAttenuationDistance) ctrlAttenuationDistance.updateDisplay();
+            if (ctrlClearcoat) ctrlClearcoat.updateDisplay();
+            if (ctrlClearcoatRoughness) ctrlClearcoatRoughness.updateDisplay();
+
+            dice.forEach(d => d.applyStyle());
+        }
+
+        function rebuildLabels() {
+            // Regenerate label planes to apply new offset
+            dice.forEach(die => {
+                if (die.labelsGroup) {
+                    die.mesh.remove(die.labelsGroup);
+                    die.labelsGroup.children.forEach(c => {
+                        if (c.material && c.material.map) c.material.map.dispose();
+                        c.material.dispose();
+                        c.geometry.dispose();
+                    });
+                    // Use original unbeveled geometry for label generation
+                    const tempMesh = new THREE.Mesh(die.originalGeometry);
+                    die.labelsGroup = buildFaceLabelsForPolyhedron(tempMesh, die.type);
+                    die.mesh.add(die.labelsGroup);
+                }
+            });
+        }
+
+        function rebuildGeometry() {
+            // Rebuild dice geometry with new bevel amount
+        dice.forEach((die, index) => {
+                const oldPosition = die.body.position.clone();
+                const oldQuaternion = die.body.quaternion.clone();
+                const oldVelocity = die.body.velocity.clone();
+                const oldAngularVelocity = die.body.angularVelocity.clone();
+                
+                // Remove old die
+                scene.remove(die.mesh);
+                world.removeBody(die.body);
+                if (die.physicsWireframe) scene.remove(die.physicsWireframe);
+                
+                // Create new die with updated geometry
+                const position = new THREE.Vector3(oldPosition.x, oldPosition.y, oldPosition.z);
+                dice[index] = new Die(die.type, position);
+                
+                // Restore physics state
+                dice[index].body.position.copy(oldPosition);
+                dice[index].body.quaternion.copy(oldQuaternion);
+                dice[index].body.velocity.copy(oldVelocity);
+                dice[index].body.angularVelocity.copy(oldAngularVelocity);
+                
+                // Restore visual state
+                dice[index].setWireframe(state.wireframe);
+                dice[index].comMesh.visible = state.showCenterOfMass;
+                if (dice[index].physicsWireframe) dice[index].physicsWireframe.visible = state.showPhysicsWireframe;
+            });
+            
+            updatePhysics();
+        }
+
+        function toggleWireframe() {
+            dice.forEach(die => die.setWireframe(state.wireframe));
+        }
+
+        function togglePhysicsWireframe() {
+            dice.forEach(die => {
+                if (die.physicsWireframe) die.physicsWireframe.visible = state.showPhysicsWireframe;
+            });
+        }
+
+        function toggleAxes() {
+            if (axesGroup) axesGroup.visible = state.showAxes;
+        }
+
+        function toggleCenterOfMass() {
+            dice.forEach(die => {
+                die.comMesh.visible = state.showCenterOfMass;
+            });
+        }
+
+        function updateSurface() {
+            const preset = SURFACE_PRESETS[state.surfaceType];
+            state.friction = preset.friction;
+            state.restitution = preset.restitution;
+            
+            // Update GUI controllers
+            frictionController.updateDisplay();
+            restitutionController.updateDisplay();
+            
+            updatePhysics();
+        }
+
+        function updatePhysics() {
+            // Keep dice-dice contact in sync with surface settings
+            diceDiceContact.friction = state.friction;
+            diceDiceContact.restitution = state.restitution;
+
+            // Update physics materials for both dice vs ground
+            const groundMaterial = groundBody.material;
+            dice.forEach(die => {
+                const contactMaterial = new CANNON.ContactMaterial(groundMaterial, die.body.material, {
+                    friction: state.friction,
+                    restitution: state.restitution
+                });
+                world.addContactMaterial(contactMaterial);
+            });
+        }
+
+        // --- Simulation Controls ---
+        const shakeBtn = document.getElementById('shakeBtn');
+        const throwBtn = document.getElementById('throwBtn');
+        const resetBtn = document.getElementById('resetBtn');
+
+        shakeBtn.addEventListener('click', () => {
+            if (!state.isSimulating) {
+                shakeDice();
+            }
+        });
+
+        throwBtn.addEventListener('click', () => {
+            if (!state.isSimulating) {
+                throwDice();
+            }
+        });
+
+        resetBtn.addEventListener('click', resetSimulation);
+
+        function shakeDice() {
+            state.isShaking = true;
+            state.isSimulating = false;
+            // Zero gravity - dice float and shake in mid-air
+            world.gravity.set(0, 0, 0);
+            dice.forEach(die => {
+                die.body.wakeUp();
+                // Record shake center so we can contain motion in a radius
+                die.shakeCenter = new CANNON.Vec3(die.body.position.x, die.body.position.y, die.body.position.z);
+                // Track elapsed shake time for fast ramp-up
+                die.shakeElapsed = 0;
+                // Very low damping so momentum builds up
+                die.body.linearDamping = 0.0001;
+                die.body.angularDamping = 0.0001;
+                // One-time impulse for instantaneous momentum (random horizontal-biased direction)
+                const impulseMag = 16 + Math.random() * 4; // 8-12 strength
+                const dir = new CANNON.Vec3(Math.random() - 0.5, Math.random() - 0.3, Math.random() - 0.5); // slightly less upward bias
+                const len = Math.sqrt(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z) || 1;
+                dir.scale(1/len, dir);
+                const impulseVec = new CANNON.Vec3(dir.x * impulseMag, dir.y * impulseMag, dir.z * impulseMag);
+                die.body.applyImpulse(impulseVec, die.body.position);
+            });
+        }
+
+        function throwDice() {
+            state.isShaking = false;
+            state.isSimulating = true;
+            // Turn on gravity - dice fall with accumulated momentum
+            world.gravity.set(0, -9.82, 0);
+            
+            dice.forEach(die => {
+                die.body.wakeUp();
+                // Keep low damping initially so velocity persists during flight
+                die.body.linearDamping = 0.1;
+                die.body.angularDamping = 0.1;
+                // Stop applying shake forces - gravity and existing velocity take over
+                die.body.force.set(0, 0, 0);
+                die.body.torque.set(0, 0, 0);
+                // Clear shake center (no containment once thrown)
+                die.shakeCenter = null;
+                // If die is moving upward (away from floor) at throw moment, schedule smooth redirection
+                if (die.body.velocity.y > 0.05) { // small threshold to avoid noise
+                    die.redirectActive = true;
+                    die.redirectTimer = 0;
+                    die.redirectStartVy = die.body.velocity.y;
+                    // Aim downward with a modest initial push: target vertical velocity negative proportional to current upward speed
+                    die.redirectTargetVy = -Math.min(die.body.velocity.y * 1.2 + 2.5, 12); // cap extreme values
+                } else {
+                    die.redirectActive = false;
+                }
+                // After 1 second, restore normal damping for settling
+                setTimeout(() => {
+                    if (die.body) {
+                        die.body.linearDamping = 0.3;
+                        die.body.angularDamping = 0.3;
+                    }
+                }, 1000);
+            });
+        }
+
+        function resetSimulation() {
+            state.isSimulating = false;
+            state.isShaking = false;
+            world.gravity.set(0, 0, 0);
+            
+            dice.forEach((die, index) => {
+                const x = index === 0 ? -1 : 1;
+                die.position = new THREE.Vector3(x, 3, 0);
+                die.reset();
+            });
+        }
+
+        // --- Animation Loop ---
         function resizeRendererToDisplaySize(renderer) {
             const canvas = renderer.domElement;
             const width = canvas.clientWidth;
@@ -177,7 +2652,7 @@
         }
 
         function animate(time) {
-            time *= 0.001; // seconds
+            time *= 0.001;
 
             if (resizeRendererToDisplaySize(renderer)) {
                 const canvas = renderer.domElement;
@@ -185,9 +2660,18 @@
                 camera.updateProjectionMatrix();
             }
 
-            if (params.autoRotate) {
-                mesh.rotation.y = time * 0.5;
+            // Adaptive physics timestep: use smaller steps only when dice are active
+            const anyDiceAwake = dice.some(die => !die.body.sleepState);
+            if (anyDiceAwake || state.isShaking || state.isSimulating) {
+                // Active simulation: use fixed timestep
+                world.step(1 / 60);
+            } else {
+                // All dice sleeping: skip physics update for performance
+                // world.step is skipped
             }
+
+            // Update dice positions
+            dice.forEach(die => die.updateMesh());
 
             controls.update();
             renderer.render(scene, camera);
@@ -195,6 +2679,10 @@
         }
 
         requestAnimationFrame(animate);
+
+        // Initial setup
+        updatePhysics();
+        resetSimulation();
     </script>
 </body>
 </html>
